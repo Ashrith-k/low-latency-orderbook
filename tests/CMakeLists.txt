@@ -34,6 +34,7 @@ endforeach()
 # Test executable. New test sources are appended here as modules land.
 # ---------------------------------------------------------------------------
 add_executable(lob_tests
+  naive_book_test.cc
   smoke_test.cc
   types_test.cc)
 target_link_libraries(lob_tests PRIVATE lob lob_warnings GTest::gtest_main)
