@@ -1,0 +1,24 @@
+# clang-tidy configuration — see CLAUDE.md / DESIGN.md §9.
+#
+# Baseline check families: bugprone-*, performance-*, modernize-*.
+# The leading `-*` disables everything first so the enabled set is explicit and
+# reproducible across clang-tidy versions/CI, rather than layered on top of the
+# tool's (version-dependent) default checks.
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -bugprone-easily-swappable-parameters
+
+# Analyze our own headers (this is a header-mostly library, so header coverage
+# matters); exclude system headers and vendored deps under build/_deps.
+HeaderFilterRegex: 'include/lob/.*\.h$'
+
+# The config defines the check set; enforcement (fail-the-build) is decided by
+# the caller via --warnings-as-errors, mirroring scripts/format.sh.
+WarningsAsErrors: ''
+
+# `clang-tidy --fix` output obeys our .clang-format.
+FormatStyle: file
