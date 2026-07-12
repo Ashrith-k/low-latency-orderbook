@@ -1,0 +1,7 @@
+# Google C++ style with a 100-column limit (project convention; see CLAUDE.md).
+# ColumnLimit is the only intentional override of BasedOnStyle: Google.
+BasedOnStyle: Google
+ColumnLimit: 100
+Standard: c++20
+# Force Google's canonical `T* p` everywhere instead of inferring per-file.
+DerivePointerAlignment: false
