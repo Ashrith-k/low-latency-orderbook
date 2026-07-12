@@ -48,3 +48,13 @@ if(LOB_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
+
+# ---------------------------------------------------------------------------
+# Benchmarks. Same top-level-only gating as tests; Google Benchmark is fetched
+# inside bench/ so it is pulled only when benchmarks are actually built.
+# ---------------------------------------------------------------------------
+option(LOB_BUILD_BENCH "Build the LOB benchmarks" ${PROJECT_IS_TOP_LEVEL})
+
+if(LOB_BUILD_BENCH)
+  add_subdirectory(bench)
+endif()
