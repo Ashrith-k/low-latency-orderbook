@@ -44,6 +44,29 @@ testing::AssertionResult EventEq(const Event& want, const Event& got) {
          << "\n  want: " << Describe(want) << "\n  got:  " << Describe(got);
 }
 
+// Shorthand builders so expected event sequences read like a spec table.
+Event Accepted(Side s, Qty qty, PriceTicks px, OrderId id) {
+  return MakeEvent(EventType::kAccepted, s, RejectReason::kNone, qty, qty, px, id);
+}
+Event Traded(Side s, Qty fill, Qty remaining, PriceTicks px, OrderId id) {
+  return MakeEvent(EventType::kTraded, s, RejectReason::kNone, fill, remaining, px, id);
+}
+Event Canceled(Side s, Qty qty, PriceTicks px, OrderId id) {
+  return MakeEvent(EventType::kCanceled, s, RejectReason::kNone, qty, 0, px, id);
+}
+Event Rejected(Side s, RejectReason r, Qty qty, PriceTicks px, OrderId id) {
+  return MakeEvent(EventType::kRejected, s, r, qty, 0, px, id);
+}
+
+void ExpectEvents(const std::vector<Event>& got, const std::vector<Event>& want) {
+  EXPECT_EQ(want.size(), got.size());
+  const std::size_t n = std::min(want.size(), got.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    SCOPED_TRACE("event " + std::to_string(i));
+    EXPECT_TRUE(EventEq(want[i], got[i]));
+  }
+}
+
 TEST(NaiveBookAddCancel, EmptyBookHasNoState) {
   NaiveBook book;
   EXPECT_EQ(std::nullopt, book.best_bid());
@@ -187,6 +210,226 @@ TEST(NaiveBookAddCancel, DoubleCancelRejected) {
   EXPECT_TRUE(
       EventEq(MakeEvent(EventType::kRejected, Side::kBuy, RejectReason::kUnknownOrder, 0, 0, 0, 1),
               events[0]));
+}
+
+// ---------------------------------------------------------------------------
+// Matching semantics (task 12): these sequences ARE the spec the optimized
+// engine must reproduce byte-for-byte.
+// ---------------------------------------------------------------------------
+
+TEST(NaiveBookMatching, CrossingLimitFullFillEmitsMakerThenTaker) {
+  NaiveBook book;
+  std::vector<Event> events;
+  book.add(1, Side::kSell, OrderType::kLimit, 100, 10, events);
+  events.clear();
+
+  EXPECT_TRUE(book.add(2, Side::kBuy, OrderType::kLimit, 100, 10, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kBuy, 10, 100, 2),
+                           Traded(Side::kSell, 10, 0, 100, 1),  // maker first
+                           Traded(Side::kBuy, 10, 0, 100, 2),   // then taker
+                       });
+  EXPECT_EQ(std::nullopt, book.best_bid());
+  EXPECT_EQ(std::nullopt, book.best_ask());
+  EXPECT_EQ(0u, book.open_orders());
+}
+
+TEST(NaiveBookMatching, PartialFillRemainderRests) {
+  NaiveBook book;
+  std::vector<Event> events;
+  book.add(1, Side::kSell, OrderType::kLimit, 100, 5, events);
+  events.clear();
+
+  EXPECT_TRUE(book.add(2, Side::kBuy, OrderType::kLimit, 100, 8, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kBuy, 8, 100, 2),
+                           Traded(Side::kSell, 5, 0, 100, 1),
+                           Traded(Side::kBuy, 5, 3, 100, 2),
+                       });
+  EXPECT_EQ(OptPx{100}, book.best_bid());
+  EXPECT_EQ(3u, book.qty_at(Side::kBuy, 100));
+  EXPECT_EQ(std::nullopt, book.best_ask());
+  EXPECT_TRUE(book.contains(2));
+  EXPECT_FALSE(book.contains(1));
+}
+
+TEST(NaiveBookMatching, AggressorPartiallyFillsRestingKeepsPriority) {
+  NaiveBook book;
+  std::vector<Event> events;
+  book.add(1, Side::kSell, OrderType::kLimit, 100, 10, events);
+  events.clear();
+
+  EXPECT_TRUE(book.add(2, Side::kBuy, OrderType::kLimit, 100, 4, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kBuy, 4, 100, 2),
+                           Traded(Side::kSell, 4, 6, 100, 1),
+                           Traded(Side::kBuy, 4, 0, 100, 2),
+                       });
+  EXPECT_EQ(6u, book.qty_at(Side::kSell, 100));
+  EXPECT_EQ(1u, book.orders_at(Side::kSell, 100));
+  EXPECT_TRUE(book.contains(1));   // still resting, reduced
+  EXPECT_FALSE(book.contains(2));  // fully filled, never rested
+  EXPECT_EQ(1u, book.open_orders());
+}
+
+TEST(NaiveBookMatching, SweepsLevelsBestFirstAtMakerPrices) {
+  NaiveBook book;
+  std::vector<Event> events;
+  book.add(1, Side::kSell, OrderType::kLimit, 103, 5, events);
+  book.add(2, Side::kSell, OrderType::kLimit, 104, 5, events);
+  events.clear();
+
+  // Buy 12 @ 105: fills 5 @ 103, 5 @ 104 (price improvement), rests 2 @ 105.
+  EXPECT_TRUE(book.add(3, Side::kBuy, OrderType::kLimit, 105, 12, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kBuy, 12, 105, 3),
+                           Traded(Side::kSell, 5, 0, 103, 1),
+                           Traded(Side::kBuy, 5, 7, 103, 3),
+                           Traded(Side::kSell, 5, 0, 104, 2),
+                           Traded(Side::kBuy, 5, 2, 104, 3),
+                       });
+  EXPECT_EQ(std::nullopt, book.best_ask());
+  EXPECT_EQ(OptPx{105}, book.best_bid());
+  EXPECT_EQ(2u, book.qty_at(Side::kBuy, 105));
+}
+
+TEST(NaiveBookMatching, FifoWithinLevel) {
+  NaiveBook book;
+  std::vector<Event> events;
+  book.add(1, Side::kSell, OrderType::kLimit, 100, 5, events);
+  book.add(2, Side::kSell, OrderType::kLimit, 100, 5, events);
+  events.clear();
+
+  // Buy 7: id 1 (older) fills fully first, id 2 fills 2 and stays.
+  EXPECT_TRUE(book.add(3, Side::kBuy, OrderType::kLimit, 100, 7, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kBuy, 7, 100, 3),
+                           Traded(Side::kSell, 5, 0, 100, 1),
+                           Traded(Side::kBuy, 5, 2, 100, 3),
+                           Traded(Side::kSell, 2, 3, 100, 2),
+                           Traded(Side::kBuy, 2, 0, 100, 3),
+                       });
+  EXPECT_EQ(3u, book.qty_at(Side::kSell, 100));
+  EXPECT_EQ(1u, book.orders_at(Side::kSell, 100));
+  EXPECT_FALSE(book.contains(1));
+  EXPECT_TRUE(book.contains(2));
+}
+
+TEST(NaiveBookMatching, SellAggressorSymmetry) {
+  NaiveBook book;
+  std::vector<Event> events;
+  book.add(1, Side::kBuy, OrderType::kLimit, 100, 5, events);
+  book.add(2, Side::kBuy, OrderType::kLimit, 99, 5, events);
+  events.clear();
+
+  // Sell 8 @ 99: fills 5 @ 100 (improvement), then 3 @ 99; nothing rests.
+  EXPECT_TRUE(book.add(3, Side::kSell, OrderType::kLimit, 99, 8, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kSell, 8, 99, 3),
+                           Traded(Side::kBuy, 5, 0, 100, 1),
+                           Traded(Side::kSell, 5, 3, 100, 3),
+                           Traded(Side::kBuy, 3, 2, 99, 2),
+                           Traded(Side::kSell, 3, 0, 99, 3),
+                       });
+  EXPECT_EQ(OptPx{99}, book.best_bid());
+  EXPECT_EQ(2u, book.qty_at(Side::kBuy, 99));
+  EXPECT_FALSE(book.contains(3));
+}
+
+TEST(NaiveBookMatching, IocCancelsUnfilledRemainder) {
+  NaiveBook book;
+  std::vector<Event> events;
+  book.add(1, Side::kSell, OrderType::kLimit, 100, 5, events);
+  events.clear();
+
+  EXPECT_TRUE(book.add(2, Side::kBuy, OrderType::kIoc, 100, 8, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kBuy, 8, 100, 2), Traded(Side::kSell, 5, 0, 100, 1),
+                           Traded(Side::kBuy, 5, 3, 100, 2),
+                           Canceled(Side::kBuy, 3, 100, 2),  // remainder never rests
+                       });
+  EXPECT_EQ(std::nullopt, book.best_bid());
+  EXPECT_EQ(0u, book.open_orders());
+}
+
+TEST(NaiveBookMatching, IocExactFillEmitsNoCancel) {
+  NaiveBook book;
+  std::vector<Event> events;
+  book.add(1, Side::kSell, OrderType::kLimit, 100, 8, events);
+  events.clear();
+
+  EXPECT_TRUE(book.add(2, Side::kBuy, OrderType::kIoc, 100, 8, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kBuy, 8, 100, 2),
+                           Traded(Side::kSell, 8, 0, 100, 1),
+                           Traded(Side::kBuy, 8, 0, 100, 2),
+                       });
+  EXPECT_EQ(0u, book.open_orders());
+}
+
+TEST(NaiveBookMatching, IocWithNoCrossableLiquidityCanceledInFull) {
+  NaiveBook book;
+  std::vector<Event> events;
+  // Ask exists but does not cross the IOC's limit.
+  book.add(1, Side::kSell, OrderType::kLimit, 105, 5, events);
+  events.clear();
+
+  EXPECT_TRUE(book.add(2, Side::kBuy, OrderType::kIoc, 100, 5, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kBuy, 5, 100, 2),
+                           Canceled(Side::kBuy, 5, 100, 2),
+                       });
+  EXPECT_EQ(5u, book.qty_at(Side::kSell, 105));  // book untouched
+  EXPECT_EQ(1u, book.open_orders());
+}
+
+TEST(NaiveBookMatching, MarketSweepsAnyPriceAndNeverRests) {
+  NaiveBook book;
+  std::vector<Event> events;
+  book.add(1, Side::kSell, OrderType::kLimit, 103, 5, events);
+  book.add(2, Side::kSell, OrderType::kLimit, 110, 5, events);
+  events.clear();
+
+  // Market buy 7: fills 5 @ 103 then 2 @ 110; market events carry price 0.
+  EXPECT_TRUE(book.add(3, Side::kBuy, OrderType::kMarket, 0, 7, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kBuy, 7, 0, 3),
+                           Traded(Side::kSell, 5, 0, 103, 1),
+                           Traded(Side::kBuy, 5, 2, 103, 3),
+                           Traded(Side::kSell, 2, 3, 110, 2),
+                           Traded(Side::kBuy, 2, 0, 110, 3),
+                       });
+  EXPECT_EQ(3u, book.qty_at(Side::kSell, 110));
+  EXPECT_EQ(1u, book.open_orders());
+  EXPECT_EQ(std::nullopt, book.best_bid());
+}
+
+TEST(NaiveBookMatching, MarketOnEmptyBookAcceptedThenCanceled) {
+  NaiveBook book;
+  std::vector<Event> events;
+  // Market ignores the price argument entirely (even a garbage negative one);
+  // its events carry price 0. Lack of liquidity is a cancel, not a reject.
+  EXPECT_TRUE(book.add(1, Side::kSell, OrderType::kMarket, -7, 5, events));
+  ExpectEvents(events, {
+                           Accepted(Side::kSell, 5, 0, 1),
+                           Canceled(Side::kSell, 5, 0, 1),
+                       });
+  EXPECT_EQ(0u, book.open_orders());
+}
+
+TEST(NaiveBookMatching, ValidationRejectsPerType) {
+  NaiveBook book;
+  std::vector<Event> events;
+  // IOC and limit require a positive price; market does not. qty must be > 0.
+  EXPECT_FALSE(book.add(1, Side::kBuy, OrderType::kIoc, 0, 5, events));
+  EXPECT_FALSE(book.add(2, Side::kBuy, OrderType::kLimit, -1, 5, events));
+  EXPECT_FALSE(book.add(3, Side::kSell, OrderType::kMarket, 0, 0, events));
+  ExpectEvents(events, {
+                           Rejected(Side::kBuy, RejectReason::kInvalidPrice, 5, 0, 1),
+                           Rejected(Side::kBuy, RejectReason::kInvalidPrice, 5, -1, 2),
+                           Rejected(Side::kSell, RejectReason::kInvalidQty, 0, 0, 3),
+                       });
+  EXPECT_EQ(0u, book.open_orders());
 }
 
 #if GTEST_HAS_DEATH_TEST && !defined(NDEBUG)
