@@ -36,3 +36,15 @@ add_library(lob INTERFACE)
 target_include_directories(lob INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_compile_features(lob INTERFACE cxx_std_20)
+
+# ---------------------------------------------------------------------------
+# Testing. Built when LOB is the top-level project (a downstream consumer of
+# the library should not pay for our test tree); dependencies are fetched
+# inside tests/ so they are pulled only when tests are actually built.
+# ---------------------------------------------------------------------------
+option(LOB_BUILD_TESTS "Build the LOB test suite" ${PROJECT_IS_TOP_LEVEL})
+
+if(LOB_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
