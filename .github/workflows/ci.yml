@@ -51,3 +51,42 @@ jobs:
 
       - name: Test
         run: ctest --preset ${{ matrix.build_type }} --output-on-failure
+
+  asan:
+    name: asan+ubsan (clang)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-17
+      CXX: clang++-17
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-17
+
+      - name: Configure
+        run: cmake --preset asan
+
+      - name: Build
+        run: cmake --build --preset asan
+
+      - name: Test
+        run: ctest --preset asan --output-on-failure
+
+  format:
+    name: format (clang-format)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        run: |
+          clang-format --version
+          ./scripts/format.sh --check
