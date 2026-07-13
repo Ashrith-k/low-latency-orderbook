@@ -2,6 +2,7 @@
 #define LOB_ORDER_POOL_H_
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -35,28 +36,58 @@ constexpr std::uint32_t generation_of(OrderId id) noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Order: one resting order, exactly one cache line. Skeleton for now — only
-// the fields the pool itself uses; the full book layout and per-field offset
-// asserts land with Day 2 task 2.
+// Order: one resting order, exactly one cache line (DESIGN.md §4.1). Field
+// order packs without internal padding; the tail pad is explicit so the whole
+// line has unique object representations (trivially serializable, memcmp-safe).
+// The pool owns order_id/generation and the links; the book fills the rest.
 // ---------------------------------------------------------------------------
 
 struct alignas(64) Order {
   // Full id while live; kInvalidOrderId while free (the pool's liveness signal).
   OrderId order_id;
-  // Last generation minted for this slot. Survives free() so the next alloc
-  // can bump it; only the pool reads or writes it.
-  std::uint32_t generation;
+  // Limit price in fixed-point ticks; meaningless for a market order in flight
+  // (market orders never rest, so a pooled market Order exists only mid-match).
+  PriceTicks price_ticks;
+  // Original quantity as accepted.
+  Qty qty;
+  // Open quantity; decremented by fills. remaining <= qty always.
+  Qty remaining;
+  Side side;
+  OrderType type;
+  // Reserved for future per-order state; keep zero until semantics exist.
+  std::uint16_t flags;
   // Intrusive links: FIFO neighbors within a price level, owning level slot.
   // While an order is on the free list, next_idx threads that list instead.
   std::int32_t prev_idx;
   std::int32_t next_idx;
   std::int32_t level_idx;
+  // Last generation minted for this slot. Survives free() so the next alloc
+  // can bump it; only the pool reads or writes it.
+  std::uint32_t generation;
+  // Explicit tail padding out to the cache line; keep zero.
+  std::uint8_t pad0[20];
 };
 
 static_assert(sizeof(Order) == 64);
 static_assert(alignof(Order) == 64);
 static_assert(std::is_trivially_copyable_v<Order>);
 static_assert(std::is_standard_layout_v<Order>);
+static_assert(std::has_unique_object_representations_v<Order>);
+
+// Offsets are load-bearing: the book and (later) snapshot/replay tooling may
+// assume them, and a silent reshuffle would be a format break.
+static_assert(offsetof(Order, order_id) == 0);
+static_assert(offsetof(Order, price_ticks) == 8);
+static_assert(offsetof(Order, qty) == 16);
+static_assert(offsetof(Order, remaining) == 20);
+static_assert(offsetof(Order, side) == 24);
+static_assert(offsetof(Order, type) == 25);
+static_assert(offsetof(Order, flags) == 26);
+static_assert(offsetof(Order, prev_idx) == 28);
+static_assert(offsetof(Order, next_idx) == 32);
+static_assert(offsetof(Order, level_idx) == 36);
+static_assert(offsetof(Order, generation) == 40);
+static_assert(offsetof(Order, pad0) == 44);
 
 // ---------------------------------------------------------------------------
 // OrderPool: fixed-capacity slab of Orders with an index free list threaded

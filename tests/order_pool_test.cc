@@ -2,7 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <unordered_set>
 #include <vector>
@@ -15,6 +18,32 @@ namespace {
 TEST(OrderLayout, IsOneCacheLine) {
   EXPECT_EQ(sizeof(Order), 64u);
   EXPECT_EQ(alignof(Order), 64u);
+}
+
+// Runtime mirror of the header's offsetof static_asserts so the layout shows
+// up in test reports; the compile-time asserts remain the real gate.
+TEST(OrderLayout, FieldOffsets) {
+  EXPECT_EQ(offsetof(Order, order_id), 0u);
+  EXPECT_EQ(offsetof(Order, price_ticks), 8u);
+  EXPECT_EQ(offsetof(Order, qty), 16u);
+  EXPECT_EQ(offsetof(Order, remaining), 20u);
+  EXPECT_EQ(offsetof(Order, side), 24u);
+  EXPECT_EQ(offsetof(Order, type), 25u);
+  EXPECT_EQ(offsetof(Order, flags), 26u);
+  EXPECT_EQ(offsetof(Order, prev_idx), 28u);
+  EXPECT_EQ(offsetof(Order, next_idx), 32u);
+  EXPECT_EQ(offsetof(Order, level_idx), 36u);
+  EXPECT_EQ(offsetof(Order, generation), 40u);
+  EXPECT_EQ(offsetof(Order, pad0), 44u);
+}
+
+// No hidden padding (has_unique_object_representations is static_asserted in
+// the header) and value-init produces all-zero bytes: together these make
+// memcmp comparison and raw serialization of Order legal.
+TEST(OrderLayout, ValueInitIsAllZeroBytes) {
+  alignas(Order) std::array<std::byte, sizeof(Order)> zeros{};
+  const Order order{};
+  EXPECT_EQ(std::memcmp(&order, zeros.data(), sizeof(Order)), 0);
 }
 
 TEST(OrderIdEncoding, HelpersRoundTrip) {
