@@ -34,6 +34,7 @@ endforeach()
 # Test executable. New test sources are appended here as modules land.
 # ---------------------------------------------------------------------------
 add_executable(lob_tests
+  differential_add_cancel_test.cc
   naive_book_test.cc
   order_book_test.cc
   order_pool_test.cc
