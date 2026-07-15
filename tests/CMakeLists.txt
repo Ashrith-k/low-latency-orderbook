@@ -35,6 +35,7 @@ endforeach()
 # ---------------------------------------------------------------------------
 add_executable(lob_tests
   naive_book_test.cc
+  order_book_test.cc
   order_pool_test.cc
   price_ladder_test.cc
   price_level_test.cc
