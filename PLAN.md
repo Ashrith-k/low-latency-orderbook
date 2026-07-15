@@ -46,15 +46,15 @@ documented limitations read as maturity, not weakness).
 
 ## Day 2 — Pool, ladder, optimized book structure
 
-1. [ ] `OrderPool` with index free list + tests (alloc/free/exhaustion/generation bits). [feat: order pool]
-2. [ ] `Order` 64-byte layout + static_asserts on size/offsets. [feat: order layout]
-3. [ ] `PriceLevel` intrusive FIFO ops (push_back/unlink) + tests. [feat: price level]
-4. [ ] `PriceLadder` banded array: level lookup, best-price cursor + tests. [feat: price ladder]
-5. [ ] Ladder overflow fallback (out-of-band map) + tests. [feat: ladder overflow]
-6. [ ] `OrderBook::add_limit` (resting only, no match yet) + tests. [feat: book add]
-7. [ ] `OrderBook::cancel` via direct pool index + tests. [feat: book cancel]
-8. [ ] Differential harness: seeded random add/cancel stream vs NaiveBook, compare book state each step. [test: differential add/cancel]
-9. [ ] Fix divergences until 1M-op runs pass; asan/ubsan green. [fix: converge books]
+1. [x] `OrderPool` with index free list + tests (alloc/free/exhaustion/generation bits). [feat: order pool]
+2. [x] `Order` 64-byte layout + static_asserts on size/offsets. [feat: order layout]
+3. [x] `PriceLevel` intrusive FIFO ops (push_back/unlink) + tests. [feat: price level]
+4. [x] `PriceLadder` banded array: level lookup, best-price cursor + tests. [feat: price ladder]
+5. [x] Ladder overflow fallback (out-of-band map) + tests. [feat: ladder overflow]
+6. [x] `OrderBook::add_limit` (resting only, no match yet) + tests. [feat: book add]
+7. [x] `OrderBook::cancel` via direct pool index + tests. [feat: book cancel]
+8. [x] Differential harness: seeded random add/cancel stream vs NaiveBook, compare book state each step. [test: differential add/cancel]
+9. [x] Fix divergences until 1M-op runs pass; asan/ubsan green. [fix: converge books]
 
 ## Day 3 — Matching engine
 
