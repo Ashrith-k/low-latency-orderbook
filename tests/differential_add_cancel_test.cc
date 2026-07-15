@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <random>
@@ -32,6 +33,7 @@ class DifferentialHarness {
   DifferentialHarness(std::uint64_t seed, int steps)
       : seed_(seed),
         steps_(steps),
+        sweep_interval_(std::max(steps / 16, 4096)),
         rng_(seed),
         fast_(kAnchor, kRadius, /*pool_capacity=*/static_cast<std::uint32_t>(steps)) {}
 
@@ -46,7 +48,9 @@ class DifferentialHarness {
       if (testing::Test::HasFatalFailure()) {
         return;  // first divergence stops the run; Ctx() names seed and step
       }
-      if (step_ % 2048 == 0) {
+      // Sweep cadence scales with run length so 1M-op runs stay bounded even
+      // as the touched-price set grows into the thousands (task 9).
+      if (step_ % sweep_interval_ == 0) {
         SweepTouchedPrices();
       }
     }
@@ -85,9 +89,11 @@ class DifferentialHarness {
 
   void DoCancel(int roll) {
     OrderId id;
+    std::size_t live_slot = 0;
     bool expect_live;
     if (roll < 85 || (dead_.empty() && roll < 95)) {
-      id = live_[static_cast<std::size_t>(Uniform(0, static_cast<int>(live_.size()) - 1))];
+      live_slot = static_cast<std::size_t>(Uniform(0, static_cast<int>(live_.size()) - 1));
+      id = live_[live_slot];
       expect_live = true;
     } else if (roll < 95) {
       id = dead_[static_cast<std::size_t>(Uniform(0, static_cast<int>(dead_.size()) - 1))];
@@ -109,7 +115,9 @@ class DifferentialHarness {
     ASSERT_EQ(fast_ok, naive_ok) << Ctx();
     ASSERT_EQ(fast_ok, expect_live) << Ctx();
     if (fast_ok) {
-      std::erase(live_, id);
+      // O(1) swap-remove: std::erase's linear scan made 1M-op runs quadratic.
+      live_[live_slot] = live_.back();
+      live_.pop_back();
       dead_.push_back(id);
       price_of_.erase(id);
       ASSERT_FALSE(fast_.contains(id)) << Ctx();
@@ -163,6 +171,7 @@ class DifferentialHarness {
 
   std::uint64_t seed_;
   int steps_;
+  int sweep_interval_;
   int step_ = 0;
   std::mt19937_64 rng_;
   OrderBook fast_;
@@ -190,6 +199,11 @@ TEST(DifferentialAddCancel, FourSeedsTwentyFiveThousandOpsEach) {
     }
   }
 }
+
+// Task 9: the scale run — 1M ops of add/cancel churn against the oracle.
+// Exercises deep slot reuse (hundreds of generations per slot), a wide price
+// walk, and sustained overflow traffic. Must also be ASan/UBSan clean.
+TEST(DifferentialAddCancel, MillionOpConvergence) { RunSeed(0x5EEDull, 1'000'000); }
 
 // Deterministic reproduction of a failing seed: LOB_DIFF_SEED=0x... ctest ...
 TEST(DifferentialAddCancel, EnvSeedReplay) {
