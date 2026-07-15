@@ -46,7 +46,9 @@ TEST(PriceLadder, BandBoundsAreInclusiveOfBothEdges) {
 TEST(PriceLadder, NewLadderIsEmpty) {
   const PriceLadder ladder(Side::kSell, kAnchor, kRadius);
   EXPECT_TRUE(ladder.empty());
-  EXPECT_EQ(ladder.level_at(kAnchor).order_count, 0u);
+  ASSERT_NE(ladder.find_level(kAnchor), nullptr);  // in-band levels always exist
+  EXPECT_EQ(ladder.find_level(kAnchor)->order_count, 0u);
+  EXPECT_EQ(ladder.find_level(kAnchor + kRadius + 50), nullptr);  // no overflow resting
 }
 
 TEST(PriceLadder, PushSetsBestAndLevelIdx) {
@@ -148,7 +150,7 @@ TEST(PriceLadder, WorksAtBandEdges) {
   EXPECT_EQ(ladder.best_price(), kAnchor + kRadius);
   EXPECT_EQ(pool[low].level_idx, 0);
   ladder.remove_order(pool, low);
-  EXPECT_EQ(ladder.level_at(kAnchor - kRadius).order_count, 0u);
+  EXPECT_EQ(ladder.find_level(kAnchor - kRadius)->order_count, 0u);
 }
 
 TEST(PriceLadder, EmptyingTheWholeBandEdgeToEdge) {
@@ -180,14 +182,106 @@ TEST(PriceLadder, FifoPreservedWithinALevel) {
   EXPECT_EQ(level.total_qty, 6u);
 }
 
-#if GTEST_HAS_DEATH_TEST && !defined(NDEBUG)
-TEST(PriceLadderDeathTest, OutOfBandPushAsserts) {
+// ---------------------------------------------------------------------------
+// Overflow region: out-of-band prices resting in the fallback map (task 5).
+// ---------------------------------------------------------------------------
+
+TEST(PriceLadderOverflow, OutOfBandPushRoutesToOverflow) {
   OrderPool pool(8);
   PriceLadder ladder(Side::kBuy, kAnchor, kRadius);
-  const std::uint32_t idx = AllocOrder(pool, Side::kBuy, kAnchor + kRadius + 1, 1);
-  EXPECT_DEATH(ladder.push_order(pool, idx), "out-of-band");
+  const PriceTicks oob = kAnchor + kRadius + 100;
+  const std::uint32_t idx = Push(ladder, pool, oob, 5);
+
+  EXPECT_EQ(pool[idx].level_idx, kOverflowIdx);
+  ASSERT_NE(ladder.find_level(oob), nullptr);
+  EXPECT_EQ(ladder.find_level(oob)->total_qty, 5u);
+  EXPECT_FALSE(ladder.empty());
 }
-#endif
+
+TEST(PriceLadderOverflow, BetterSideOverflowBeatsBandBest) {
+  OrderPool pool(8);
+  // Bids: an out-of-band price above the band outranks everything in band.
+  PriceLadder bids(Side::kBuy, kAnchor, kRadius);
+  Push(bids, pool, kAnchor);
+  Push(bids, pool, kAnchor + kRadius + 10);
+  EXPECT_EQ(bids.best_price(), kAnchor + kRadius + 10);
+  EXPECT_EQ(bids.best_level().order_count, 1u);
+
+  // Asks: an out-of-band price below the band outranks everything in band.
+  PriceLadder asks(Side::kSell, kAnchor, kRadius);
+  Push(asks, pool, kAnchor);
+  Push(asks, pool, kAnchor - kRadius - 10);
+  EXPECT_EQ(asks.best_price(), kAnchor - kRadius - 10);
+}
+
+TEST(PriceLadderOverflow, WorseSideOverflowDoesNotDisplaceBandBest) {
+  OrderPool pool(8);
+  PriceLadder bids(Side::kBuy, kAnchor, kRadius);
+  Push(bids, pool, kAnchor);
+  Push(bids, pool, kAnchor - kRadius - 10);  // deep out-of-band bid: worse
+  EXPECT_EQ(bids.best_price(), kAnchor);
+
+  PriceLadder asks(Side::kSell, kAnchor, kRadius);
+  Push(asks, pool, kAnchor);
+  Push(asks, pool, kAnchor + kRadius + 10);
+  EXPECT_EQ(asks.best_price(), kAnchor);
+}
+
+TEST(PriceLadderOverflow, EmptiedOverflowLevelIsErased) {
+  OrderPool pool(8);
+  PriceLadder ladder(Side::kBuy, kAnchor, kRadius);
+  const PriceTicks oob = kAnchor + kRadius + 7;
+  const std::uint32_t a = Push(ladder, pool, oob, 1);
+  const std::uint32_t b = Push(ladder, pool, oob, 2);
+
+  ladder.remove_order(pool, a);
+  ASSERT_NE(ladder.find_level(oob), nullptr);  // still one order resting
+  EXPECT_EQ(ladder.find_level(oob)->total_qty, 2u);
+  EXPECT_EQ(pool[a].level_idx, kNullIdx);
+
+  ladder.remove_order(pool, b);
+  EXPECT_EQ(ladder.find_level(oob), nullptr);  // node erased, not left empty
+  EXPECT_TRUE(ladder.empty());
+}
+
+TEST(PriceLadderOverflow, FifoPreservedWithinOverflowLevel) {
+  OrderPool pool(8);
+  PriceLadder ladder(Side::kSell, kAnchor, kRadius);
+  const PriceTicks oob = kAnchor - kRadius - 3;
+  const std::uint32_t a = Push(ladder, pool, oob, 1);
+  const std::uint32_t b = Push(ladder, pool, oob, 2);
+
+  const PriceLevel& level = *ladder.find_level(oob);
+  EXPECT_EQ(level.head_idx, static_cast<std::int32_t>(a));
+  EXPECT_EQ(level.tail_idx, static_cast<std::int32_t>(b));
+  EXPECT_EQ(pool[a].next_idx, static_cast<std::int32_t>(b));
+}
+
+TEST(PriceLadderOverflow, BestCascadesAcrossBandAndBothOverflowSides) {
+  OrderPool pool(8);
+  PriceLadder bids(Side::kBuy, kAnchor, kRadius);
+  const std::uint32_t above = Push(bids, pool, kAnchor + kRadius + 20);
+  const std::uint32_t in_band = Push(bids, pool, kAnchor);
+  const std::uint32_t below = Push(bids, pool, kAnchor - kRadius - 20);
+
+  EXPECT_EQ(bids.best_price(), kAnchor + kRadius + 20);
+  bids.remove_order(pool, above);
+  EXPECT_EQ(bids.best_price(), kAnchor);  // falls back to the band
+  bids.remove_order(pool, in_band);
+  EXPECT_EQ(bids.best_price(), kAnchor - kRadius - 20);  // then worse overflow
+  bids.remove_order(pool, below);
+  EXPECT_TRUE(bids.empty());
+}
+
+TEST(PriceLadderOverflow, OnlyOverflowOrdersStillCountAsNonEmpty) {
+  OrderPool pool(8);
+  PriceLadder ladder(Side::kSell, kAnchor, kRadius);
+  const std::uint32_t idx = Push(ladder, pool, kAnchor + kRadius + 1);
+  EXPECT_FALSE(ladder.empty());
+  EXPECT_EQ(ladder.best_price(), kAnchor + kRadius + 1);
+  ladder.remove_order(pool, idx);
+  EXPECT_TRUE(ladder.empty());
+}
 
 }  // namespace
 }  // namespace lob

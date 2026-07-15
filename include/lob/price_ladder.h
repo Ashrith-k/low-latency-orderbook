@@ -1,9 +1,11 @@
 #ifndef LOB_PRICE_LADDER_H_
 #define LOB_PRICE_LADDER_H_
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <type_traits>
 #include <vector>
 
@@ -90,17 +92,21 @@ static_assert(offsetof(PriceLevel, total_qty) == 16);
 // Default banded-array radius: ±4096 ticks around the anchor (DESIGN.md §4.3).
 inline constexpr std::uint32_t kDefaultBandRadius = 4096;
 
+// Order::level_idx sentinel: the order rests in the ladder's out-of-band
+// overflow map, not the banded array (whose offsets are >= 0).
+inline constexpr std::int32_t kOverflowIdx = -2;
+
 // ---------------------------------------------------------------------------
 // PriceLadder: one side of the book as a contiguous array of PriceLevels
 // indexed by tick offset within [anchor - radius, anchor + radius], plus a
 // best-price cursor. Level lookup is a subtract and one indexed load — the
 // cache-behavior argument against std::map (DESIGN.md §4.3). Out-of-band
-// prices are the caller's problem until the overflow region lands (task 5);
-// in_band() is the routing query.
+// prices fall back to a std::map overflow region — the blessed rare path;
+// its entries are always non-empty levels (erased eagerly on empty).
 //
 // push_order/remove_order deliberately wrap the PriceLevel ops: the best
 // cursor and level contents are updated in one place and cannot drift apart.
-// The ladder also owns Order::level_idx (the level's slot is its offset).
+// The ladder also owns Order::level_idx (the banded offset, or kOverflowIdx).
 // ---------------------------------------------------------------------------
 
 class PriceLadder {
@@ -117,19 +123,30 @@ class PriceLadder {
     return price >= low_price_ && price < low_price_ + static_cast<PriceTicks>(levels_.size());
   }
 
-  // Direct level access for queries and the differential harness.
-  // Precondition: in_band(price).
-  const PriceLevel& level_at(PriceTicks price) const noexcept {
-    assert(in_band(price));
-    return levels_[static_cast<std::size_t>(price - low_price_)];
+  // Uniform level query for the book and the differential harness: in-band
+  // prices always have a level (possibly empty); out-of-band prices return
+  // nullptr unless an overflow level currently rests there.
+  const PriceLevel* find_level(PriceTicks price) const noexcept {
+    if (in_band(price)) {
+      return &levels_[static_cast<std::size_t>(price - low_price_)];
+    }
+    const auto it = overflow_.find(price);
+    return it == overflow_.end() ? nullptr : &it->second;
   }
 
   // Links an order (fields already filled, links null) into its price level
   // and pulls the best cursor toward it if it improves the side. Writes
-  // Order::level_idx. Precondition: in_band(order.price_ticks).
+  // Order::level_idx. Out-of-band prices rest in the overflow map; that
+  // insert may allocate (the DESIGN-blessed rare-path exception to
+  // zero-alloc). noexcept is deliberate: if bad_alloc ever fires here the
+  // engine cannot run anyway, and terminating beats unwinding the hot path.
   void push_order(OrderPool& pool, std::uint32_t order_idx) noexcept {
     Order& order = pool[order_idx];
-    assert(in_band(order.price_ticks) && "out-of-band price");
+    if (!in_band(order.price_ticks)) {
+      overflow_[order.price_ticks].push_back(pool, order_idx);
+      order.level_idx = kOverflowIdx;
+      return;
+    }
     const auto offset = static_cast<std::int32_t>(order.price_ticks - low_price_);
     levels_[static_cast<std::size_t>(offset)].push_back(pool, order_idx);
     order.level_idx = offset;
@@ -139,14 +156,26 @@ class PriceLadder {
   }
 
   // Unlinks an order from its level (located via Order::level_idx, no price
-  // recompute) and resets level_idx. If that empties the best level, the
-  // cursor scans toward worse prices: worst-case O(band), but the next
+  // recompute) and resets level_idx. If that empties the best in-band level,
+  // the cursor scans toward worse prices: worst-case O(band), but the next
   // non-empty level is typically a few ticks away and the walk is sequential
   // loads over a contiguous array — the trade we chose against a tree.
+  // Overflow orders are found by their own price; the emptied map node is
+  // erased so overflow entries stay non-empty.
   void remove_order(OrderPool& pool, std::uint32_t order_idx) noexcept {
     Order& order = pool[order_idx];
     const std::int32_t offset = order.level_idx;
     assert(offset != kNullIdx && "order not in a ladder level");
+    if (offset == kOverflowIdx) {
+      const auto it = overflow_.find(order.price_ticks);
+      assert(it != overflow_.end());
+      it->second.unlink(pool, order_idx);
+      order.level_idx = kNullIdx;
+      if (it->second.empty()) {
+        overflow_.erase(it);
+      }
+      return;
+    }
     assert(offset == static_cast<std::int32_t>(order.price_ticks - low_price_));
     PriceLevel& level = levels_[static_cast<std::size_t>(offset)];
     level.unlink(pool, order_idx);
@@ -156,16 +185,34 @@ class PriceLadder {
     }
   }
 
-  bool empty() const noexcept { return best_offset_ == kNullIdx; }
+  bool empty() const noexcept { return best_offset_ == kNullIdx && overflow_.empty(); }
 
+  // Best across band and overflow. The overflow check is one usually-true
+  // branch (map empty), so the common case stays a single add.
   // Precondition for both: !empty().
   PriceTicks best_price() const noexcept {
     assert(!empty());
-    return low_price_ + best_offset_;
+    if (overflow_.empty()) {
+      return low_price_ + best_offset_;
+    }
+    const PriceTicks overflow_best =
+        side_ == Side::kBuy ? overflow_.rbegin()->first : overflow_.begin()->first;
+    if (best_offset_ == kNullIdx) {
+      return overflow_best;
+    }
+    const PriceTicks band_best = low_price_ + best_offset_;
+    return side_ == Side::kBuy ? std::max(band_best, overflow_best)
+                               : std::min(band_best, overflow_best);
   }
+
   PriceLevel& best_level() noexcept {
-    assert(!empty());
-    return levels_[static_cast<std::size_t>(best_offset_)];
+    const PriceTicks price = best_price();
+    if (in_band(price)) {
+      return levels_[static_cast<std::size_t>(price - low_price_)];
+    }
+    const auto it = overflow_.find(price);
+    assert(it != overflow_.end());
+    return it->second;
   }
 
   Side side() const noexcept { return side_; }
@@ -194,6 +241,8 @@ class PriceLadder {
   PriceTicks low_price_;  // price of levels_[0]
   std::int32_t best_offset_ = kNullIdx;
   std::vector<PriceLevel> levels_;
+  // Out-of-band levels, keyed by price. Rare path; every entry is non-empty.
+  std::map<PriceTicks, PriceLevel> overflow_;
 };
 
 }  // namespace lob
