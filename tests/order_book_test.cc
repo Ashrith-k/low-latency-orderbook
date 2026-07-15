@@ -136,5 +136,103 @@ TEST(OrderBookAdd, MintedIdsAreUnique) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cancel (task 7): O(1) removal via the id's pool index, no hash map.
+// ---------------------------------------------------------------------------
+
+TEST(OrderBookCancel, RemovesRestingOrder) {
+  OrderBook book = MakeBook();
+  const OrderId id = book.add_limit(Side::kBuy, kAnchor - 1, 10);
+
+  EXPECT_TRUE(book.cancel(id));
+  EXPECT_FALSE(book.contains(id));
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor - 1), 0u);
+  EXPECT_EQ(book.orders_at(Side::kBuy, kAnchor - 1), 0u);
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+TEST(OrderBookCancel, UnknownIdsAreRejected) {
+  OrderBook book = MakeBook();
+  book.add_limit(Side::kSell, kAnchor + 1, 5);
+
+  EXPECT_FALSE(book.cancel(kInvalidOrderId));
+  EXPECT_FALSE(book.cancel(make_order_id(1, 100)));  // index beyond capacity
+  EXPECT_FALSE(book.cancel(make_order_id(99, 0)));   // forged generation
+  EXPECT_EQ(book.open_orders(), 1u);
+}
+
+TEST(OrderBookCancel, DoubleCancelIsRejected) {
+  OrderBook book = MakeBook();
+  const OrderId id = book.add_limit(Side::kBuy, kAnchor, 5);
+  EXPECT_TRUE(book.cancel(id));
+  EXPECT_FALSE(book.cancel(id));
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+// The generation bits' whole purpose: a stale id must not cancel the
+// unrelated order that now occupies its recycled pool slot.
+TEST(OrderBookCancel, StaleIdAfterSlotReuseIsRejected) {
+  OrderBook book = MakeBook();
+  const OrderId old_id = book.add_limit(Side::kBuy, kAnchor - 1, 10);
+  EXPECT_TRUE(book.cancel(old_id));
+
+  const OrderId new_id = book.add_limit(Side::kSell, kAnchor + 1, 20);
+  ASSERT_EQ(index_of(new_id), index_of(old_id));  // LIFO free list reused the slot
+
+  EXPECT_FALSE(book.cancel(old_id));
+  EXPECT_TRUE(book.contains(new_id));
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 20u);
+}
+
+TEST(OrderBookCancel, BestFallsToNextLevel) {
+  OrderBook book = MakeBook();
+  book.add_limit(Side::kBuy, kAnchor - 5, 1);
+  const OrderId best_bid = book.add_limit(Side::kBuy, kAnchor - 1, 1);
+  book.add_limit(Side::kSell, kAnchor + 5, 1);
+  const OrderId best_ask = book.add_limit(Side::kSell, kAnchor + 1, 1);
+
+  EXPECT_TRUE(book.cancel(best_bid));
+  EXPECT_EQ(book.best_bid(), kAnchor - 5);
+  EXPECT_TRUE(book.cancel(best_ask));
+  EXPECT_EQ(book.best_ask(), kAnchor + 5);
+}
+
+TEST(OrderBookCancel, MiddleOfFifoLeavesRestIntact) {
+  OrderBook book = MakeBook();
+  book.add_limit(Side::kBuy, kAnchor, 1);
+  const OrderId middle = book.add_limit(Side::kBuy, kAnchor, 2);
+  book.add_limit(Side::kBuy, kAnchor, 4);
+
+  EXPECT_TRUE(book.cancel(middle));
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor), 5u);
+  EXPECT_EQ(book.orders_at(Side::kBuy, kAnchor), 2u);
+  EXPECT_EQ(book.best_bid(), kAnchor);
+}
+
+TEST(OrderBookCancel, OverflowOrderCancelErasesLevel) {
+  OrderBook book = MakeBook();
+  const PriceTicks oob = kAnchor + kRadius + 100;
+  book.add_limit(Side::kBuy, kAnchor, 1);
+  const OrderId top = book.add_limit(Side::kBuy, oob, 6);
+  EXPECT_EQ(book.best_bid(), oob);
+
+  EXPECT_TRUE(book.cancel(top));
+  EXPECT_EQ(book.qty_at(Side::kBuy, oob), 0u);
+  EXPECT_EQ(book.best_bid(), kAnchor);
+}
+
+TEST(OrderBookCancel, FreedSlotIsReusable) {
+  OrderBook book = MakeBook(/*pool_capacity=*/1);
+  const OrderId first = book.add_limit(Side::kBuy, kAnchor, 1);
+  ASSERT_NE(first, kInvalidOrderId);
+  EXPECT_EQ(book.add_limit(Side::kBuy, kAnchor, 1), kInvalidOrderId);  // exhausted
+
+  EXPECT_TRUE(book.cancel(first));
+  const OrderId second = book.add_limit(Side::kSell, kAnchor + 2, 3);
+  ASSERT_NE(second, kInvalidOrderId);
+  EXPECT_EQ(book.best_ask(), kAnchor + 2);
+}
+
 }  // namespace
 }  // namespace lob

@@ -50,6 +50,23 @@ class OrderBook {
     return id;
   }
 
+  // Cancels an open order: true iff it was resting and is now removed.
+  // Unknown, stale (slot reused), and already-canceled ids return false and
+  // leave the book untouched. The whole path is O(1) off the id itself —
+  // find is a bounds check plus one compare, the level comes from
+  // Order::level_idx, and the slot goes straight back to the free list
+  // (DESIGN.md §4.2: no hash map on the hot path).
+  bool cancel(OrderId id) noexcept {
+    const Order* order = pool_.find(id);
+    if (order == nullptr) {
+      return false;
+    }
+    const std::uint32_t index = index_of(id);
+    ladder(order->side).remove_order(pool_, index);
+    pool_.free(index);
+    return true;
+  }
+
   std::optional<PriceTicks> best_bid() const noexcept {
     if (bids_.empty()) return std::nullopt;
     return bids_.best_price();
