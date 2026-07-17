@@ -34,38 +34,58 @@ class OrderBook {
   // executable spec): sweeps the opposite side best level first, FIFO within
   // a level, partial fills; every fill executes at the resting order's price.
   // A limit remainder rests at the limit price; a market/IOC remainder is
-  // dropped (Canceled events land with Day 3 task 3). Market sweeps at any
-  // price — the price argument is ignored — and lack of liquidity is
+  // canceled. Market sweeps at any price — the price argument is ignored,
+  // and its events carry price 0 — and lack of liquidity is
   // acceptance-then-cancel, not a reject.
-  // Returns the minted id — an order that fills or cancels out never rests,
-  // but its id is still real (and permanently stale) — or kInvalidOrderId on
-  // validation failure (qty == 0 for all types; price <= 0 for limit/IOC
-  // only — same checks, same order as NaiveBook) or pool exhaustion. The
-  // slot is allocated before the sweep because even a never-rests taker
-  // needs an id, so a full pool rejects up front regardless of what the
-  // sweep would have done.
-  OrderId add(Side side, OrderType type, PriceTicks price, Qty qty) noexcept {
+  // Events, in NaiveBook's exact order and shape: one Rejected (validation —
+  // qty == 0 for all types, price <= 0 for limit/IOC only — or pool
+  // exhaustion, which NaiveBook cannot express and is shaped by analogy), OR
+  // Accepted, then a maker-then-taker Traded pair per fill, then Canceled
+  // for a market/IOC remainder. `sink` is any callable taking const Event&;
+  // it must not throw (add is noexcept — no exceptions on the hot path).
+  // Add-rejects carry order_id = kInvalidOrderId: no id was minted
+  // (types.h). Returns the minted id — an order that fills or cancels out
+  // never rests, but its id is still real (and permanently stale) — or
+  // kInvalidOrderId on reject. The slot is allocated before the sweep
+  // because even a never-rests taker needs an id, so a full pool rejects up
+  // front regardless of what the sweep would have done.
+  template <typename EventSink>
+  OrderId add(Side side, OrderType type, PriceTicks price, Qty qty, EventSink&& sink) noexcept {
     if (qty == 0) {
+      sink(MakeEvent(EventType::kRejected, side, RejectReason::kInvalidQty, qty, 0, price,
+                     kInvalidOrderId));
       return kInvalidOrderId;
     }
     const bool is_market = type == OrderType::kMarket;
     if (!is_market && price <= 0) {
+      sink(MakeEvent(EventType::kRejected, side, RejectReason::kInvalidPrice, qty, 0, price,
+                     kInvalidOrderId));
       return kInvalidOrderId;
     }
     const OrderId id = pool_.alloc();
     if (id == kInvalidOrderId) {
+      sink(MakeEvent(EventType::kRejected, side, RejectReason::kPoolExhausted, qty, 0, price,
+                     kInvalidOrderId));
       return kInvalidOrderId;
     }
+    // Market events carry price 0 (NaiveBook: echoing a meaningless caller
+    // price would make byte-exact differential comparison fragile).
+    const PriceTicks order_px = is_market ? 0 : price;
+    sink(MakeEvent(EventType::kAccepted, side, RejectReason::kNone, qty, qty, order_px, id));
     // A market order is a limit at an unbeatable price: sweeping with that
     // sentinel crosses every level, so Match needs no market branch. Safe —
     // Crosses only compares, never does arithmetic on the limit.
     const PriceTicks limit = !is_market           ? price
                              : side == Side::kBuy ? std::numeric_limits<PriceTicks>::max()
                                                   : std::numeric_limits<PriceTicks>::min();
-    const Qty remaining = Match(side, limit, qty);
+    const Qty remaining = Match(side, limit, qty, id, sink);
     const std::uint32_t index = index_of(id);
     if (remaining == 0 || type != OrderType::kLimit) {
       // Fully filled, or a market/IOC remainder: nothing rests.
+      if (remaining > 0) {
+        sink(
+            MakeEvent(EventType::kCanceled, side, RejectReason::kNone, remaining, 0, order_px, id));
+      }
       pool_.free(index);
       return id;
     }
@@ -80,11 +100,17 @@ class OrderBook {
     return id;
   }
 
+  // Event-less convenience overload (structural tests, benchmarks).
+  OrderId add(Side side, OrderType type, PriceTicks price, Qty qty) noexcept {
+    return add(side, type, price, qty, [](const Event&) noexcept {});
+  }
+
   // Rests a limit order without matching (crossing prices rest too, exactly
   // like NaiveBook::add_limit — the Day-2 differential harness depends on
   // that). Returns the engine-assigned id, or kInvalidOrderId on validation
   // failure (qty == 0, price <= 0; same checks, same order as NaiveBook) or
-  // pool exhaustion. Events land with Day 3 task 3.
+  // pool exhaustion. Deliberately event-less: it exists for structural
+  // add/cancel comparison; add() is the event-emitting entry point.
   OrderId add_limit(Side side, PriceTicks price, Qty qty) noexcept {
     if (qty == 0 || price <= 0) {
       return kInvalidOrderId;
@@ -110,15 +136,30 @@ class OrderBook {
   // find is a bounds check plus one compare, the level comes from
   // Order::level_idx, and the slot goes straight back to the free list
   // (DESIGN.md §4.2: no hash map on the hot path).
-  bool cancel(OrderId id) noexcept {
+  // Events, exactly like NaiveBook: Canceled (qty = open qty removed,
+  // remaining = 0, the order's own side/price) or Rejected(kUnknownOrder)
+  // echoing the target id, side zero (kBuy) by spec — the side of an
+  // unknown id is unknowable.
+  template <typename EventSink>
+  bool cancel(OrderId id, EventSink&& sink) noexcept {
     const Order* order = pool_.find(id);
     if (order == nullptr) {
+      sink(MakeEvent(EventType::kRejected, Side::kBuy, RejectReason::kUnknownOrder, 0, 0, 0, id));
       return false;
     }
+    const Side side = order->side;
+    const PriceTicks price = order->price_ticks;
+    const Qty open = order->remaining;
     const std::uint32_t index = index_of(id);
-    ladder(order->side).remove_order(pool_, index);
+    ladder(side).remove_order(pool_, index);
     pool_.free(index);
+    sink(MakeEvent(EventType::kCanceled, side, RejectReason::kNone, open, 0, price, id));
     return true;
+  }
+
+  // Event-less convenience overload (structural tests, benchmarks).
+  bool cancel(OrderId id) noexcept {
+    return cancel(id, [](const Event&) noexcept {});
   }
 
   std::optional<PriceTicks> best_bid() const noexcept {
@@ -158,13 +199,18 @@ class OrderBook {
 
   // Sweeps the side opposite `taker_side` while the taker has quantity left
   // and its limit crosses the best opposing level; fills hit the level head
-  // (FIFO = time priority). A fully filled maker is remove_order'ed BEFORE
-  // its remaining is touched — unlink debits total_qty by that remaining —
-  // then its slot is recycled. A partially filled maker keeps its FIFO
-  // place, so its remaining and the level aggregate are debited by hand
-  // (unlink is the only level op that maintains total_qty implicitly).
-  // Returns the taker's unfilled remainder.
-  Qty Match(Side taker_side, PriceTicks limit_price, Qty qty) noexcept {
+  // (FIFO = time priority). Each fill emits the maker-then-taker Traded pair
+  // — both at the maker's price, each carrying that order's own post-fill
+  // remaining — BEFORE the maker is unlinked, while its id/price are still
+  // live. A fully filled maker is then remove_order'ed with its remaining
+  // untouched — unlink debits total_qty by that remaining — and its slot
+  // recycled. A partially filled maker keeps its FIFO place, so its
+  // remaining and the level aggregate are debited by hand (unlink is the
+  // only level op that maintains total_qty implicitly). Returns the taker's
+  // unfilled remainder.
+  template <typename EventSink>
+  Qty Match(Side taker_side, PriceTicks limit_price, Qty qty, OrderId taker_id,
+            EventSink&& sink) noexcept {
     PriceLadder& opposite = ladder(taker_side == Side::kBuy ? Side::kSell : Side::kBuy);
     Qty remaining = qty;
     while (remaining > 0 && !opposite.empty() &&
@@ -175,15 +221,33 @@ class OrderBook {
       Order& maker = pool_[maker_idx];
       const Qty fill = std::min(remaining, maker.remaining);
       remaining -= fill;
-      if (fill == maker.remaining) {
+      const Qty maker_left = maker.remaining - fill;
+      sink(MakeEvent(EventType::kTraded, maker.side, RejectReason::kNone, fill, maker_left,
+                     maker.price_ticks, maker.order_id));
+      sink(MakeEvent(EventType::kTraded, taker_side, RejectReason::kNone, fill, remaining,
+                     maker.price_ticks, taker_id));
+      if (maker_left == 0) {
         opposite.remove_order(pool_, maker_idx);
         pool_.free(maker_idx);
       } else {
-        maker.remaining -= fill;
+        maker.remaining = maker_left;
         level.total_qty -= fill;
       }
     }
     return remaining;
+  }
+
+  static Event MakeEvent(EventType kind, Side side, RejectReason reason, Qty qty, Qty remaining,
+                         PriceTicks price, OrderId id) noexcept {
+    return Event{.kind = kind,
+                 .side = side,
+                 .reason = reason,
+                 .pad0 = 0,
+                 .qty = qty,
+                 .remaining = remaining,
+                 .pad1 = 0,
+                 .price_ticks = price,
+                 .order_id = id};
   }
 
   OrderPool pool_;
