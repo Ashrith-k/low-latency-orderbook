@@ -421,5 +421,163 @@ TEST(OrderBookMatch, FilledSlotsAreRecycled) {
   EXPECT_EQ(book.open_orders(), 2u);
 }
 
+// ---------------------------------------------------------------------------
+// Market + IOC (Day 3 task 2): market sweeps at any price and ignores the
+// price argument; IOC sweeps within its limit; neither ever rests — the
+// remainder is dropped (Canceled events land with task 3).
+// ---------------------------------------------------------------------------
+
+TEST(OrderBookMarketIoc, MarketBuySweepsBestFirstAndNeverRests) {
+  OrderBook book = MakeBook();
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 5);
+  const OrderId far = book.add(Side::kSell, OrderType::kLimit, kAnchor + 2, 5);
+
+  const OrderId taker = book.add(Side::kBuy, OrderType::kMarket, 0, 8);
+
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_FALSE(book.contains(taker));
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 0u);
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 2), 2u);  // 5 @ +1, then 3 of 5 @ +2
+  EXPECT_TRUE(book.contains(far));
+  EXPECT_EQ(book.best_ask(), kAnchor + 2);
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.open_orders(), 1u);
+}
+
+TEST(OrderBookMarketIoc, MarketSellSweepsBidsMirror) {
+  OrderBook book = MakeBook();
+  book.add(Side::kBuy, OrderType::kLimit, kAnchor - 1, 5);
+  book.add(Side::kBuy, OrderType::kLimit, kAnchor - 2, 5);
+
+  const OrderId taker = book.add(Side::kSell, OrderType::kMarket, 0, 8);
+
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_FALSE(book.contains(taker));
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor - 1), 0u);
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor - 2), 2u);
+  EXPECT_EQ(book.best_bid(), kAnchor - 2);
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+}
+
+// The price argument is ignored entirely: negative, zero, and "non-crossing"
+// prices all sweep the same. (NaiveBook: market ignores price.)
+TEST(OrderBookMarketIoc, MarketIgnoresPriceArgument) {
+  OrderBook book = MakeBook();
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 5, 6);
+
+  // A limit buy at kAnchor - 5 would not cross; a market buy carrying that
+  // price sweeps anyway. So does one with a negative price.
+  const OrderId low = book.add(Side::kBuy, OrderType::kMarket, kAnchor - 5, 2);
+  ASSERT_NE(low, kInvalidOrderId);
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 5), 4u);
+
+  const OrderId negative = book.add(Side::kBuy, OrderType::kMarket, -7, 2);
+  ASSERT_NE(negative, kInvalidOrderId);
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 5), 2u);
+}
+
+// Lack of liquidity is acceptance-then-cancel, not a reject: the id is real,
+// the book untouched.
+TEST(OrderBookMarketIoc, MarketOnEmptyBookIsAcceptedNotRejected) {
+  OrderBook book = MakeBook();
+  const OrderId taker = book.add(Side::kBuy, OrderType::kMarket, 0, 10);
+
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_FALSE(book.contains(taker));
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+  EXPECT_EQ(book.open_orders(), 0u);
+  EXPECT_FALSE(book.cancel(taker));  // never rested, permanently stale
+}
+
+TEST(OrderBookMarketIoc, MarketRemainderVanishesAfterSweepingAllLiquidity) {
+  OrderBook book = MakeBook();
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 5);
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 3, 5);
+
+  const OrderId taker = book.add(Side::kBuy, OrderType::kMarket, 0, 25);
+
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+  EXPECT_EQ(book.best_bid(), std::nullopt);  // remainder 15 dropped, nothing rests
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+TEST(OrderBookMarketIoc, MarketZeroQtyRejected) {
+  OrderBook book = MakeBook();
+  EXPECT_EQ(book.add(Side::kBuy, OrderType::kMarket, 0, 0), kInvalidOrderId);
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+TEST(OrderBookMarketIoc, IocFillsWithinLimitAndRemainderIsDropped) {
+  OrderBook book = MakeBook();
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 5);
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 2, 5);
+  const OrderId untouched = book.add(Side::kSell, OrderType::kLimit, kAnchor + 4, 5);
+
+  const OrderId taker = book.add(Side::kBuy, OrderType::kIoc, kAnchor + 2, 12);
+
+  // Fills 5 @ +1 and 5 @ +2 exactly like a limit; +4 does not cross; the
+  // remainder 2 is dropped instead of resting.
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_FALSE(book.contains(taker));
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 0u);
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 2), 0u);
+  EXPECT_TRUE(book.contains(untouched));
+  EXPECT_EQ(book.best_ask(), kAnchor + 4);
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.open_orders(), 1u);
+}
+
+TEST(OrderBookMarketIoc, IocPartialMakerFillLeavesRemainderResting) {
+  OrderBook book = MakeBook();
+  const OrderId maker = book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 10);
+
+  const OrderId taker = book.add(Side::kBuy, OrderType::kIoc, kAnchor + 1, 4);
+
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_TRUE(book.contains(maker));
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 6u);
+  EXPECT_EQ(book.open_orders(), 1u);
+}
+
+TEST(OrderBookMarketIoc, IocNonCrossingIsAcceptedAndDropped) {
+  OrderBook book = MakeBook();
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 5, 10);
+
+  const OrderId taker = book.add(Side::kBuy, OrderType::kIoc, kAnchor - 5, 4);
+
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_FALSE(book.contains(taker));
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 5), 10u);  // untouched
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.open_orders(), 1u);
+}
+
+// IOC validates price exactly like a limit — only market ignores it.
+TEST(OrderBookMarketIoc, IocValidationRejects) {
+  OrderBook book = MakeBook();
+  EXPECT_EQ(book.add(Side::kBuy, OrderType::kIoc, kAnchor, 0), kInvalidOrderId);
+  EXPECT_EQ(book.add(Side::kBuy, OrderType::kIoc, 0, 5), kInvalidOrderId);
+  EXPECT_EQ(book.add(Side::kBuy, OrderType::kIoc, -3, 5), kInvalidOrderId);
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+TEST(OrderBookMarketIoc, NeverRestingTakerSlotsAreRecycled) {
+  OrderBook book = MakeBook(/*pool_capacity=*/2);
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 10);
+
+  // Each taker borrows the second slot and returns it.
+  ASSERT_NE(book.add(Side::kBuy, OrderType::kMarket, 0, 2), kInvalidOrderId);
+  ASSERT_NE(book.add(Side::kBuy, OrderType::kIoc, kAnchor + 1, 2), kInvalidOrderId);
+  ASSERT_NE(book.add(Side::kBuy, OrderType::kIoc, kAnchor - 1, 2), kInvalidOrderId);
+
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 6u);
+  EXPECT_EQ(book.open_orders(), 1u);
+  // The freed slot still rests a real order afterwards.
+  EXPECT_NE(book.add(Side::kBuy, OrderType::kLimit, kAnchor - 1, 1), kInvalidOrderId);
+  EXPECT_EQ(book.open_orders(), 2u);
+}
+
 }  // namespace
 }  // namespace lob

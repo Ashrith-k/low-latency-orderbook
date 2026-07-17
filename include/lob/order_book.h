@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 #include "lob/order_pool.h"
@@ -32,27 +33,39 @@ class OrderBook {
   // Full matching entry point (NaiveBook::add and naive_book_test.cc are the
   // executable spec): sweeps the opposite side best level first, FIFO within
   // a level, partial fills; every fill executes at the resting order's price.
-  // The unfilled remainder rests at the limit price. Limit orders only until
-  // Day 3 task 2 — a non-limit type is a precondition violation for now.
-  // Events land with Day 3 task 3.
-  // Returns the minted id — a fully filled order is already gone from the
-  // book, but its id is still real (and permanently stale) — or
-  // kInvalidOrderId on validation failure (same checks, same order as
-  // NaiveBook) or pool exhaustion. The slot is allocated before the sweep
-  // because even a fully-filled-never-rests taker needs an id, so a full
-  // pool rejects up front regardless of what the sweep would have done.
+  // A limit remainder rests at the limit price; a market/IOC remainder is
+  // dropped (Canceled events land with Day 3 task 3). Market sweeps at any
+  // price — the price argument is ignored — and lack of liquidity is
+  // acceptance-then-cancel, not a reject.
+  // Returns the minted id — an order that fills or cancels out never rests,
+  // but its id is still real (and permanently stale) — or kInvalidOrderId on
+  // validation failure (qty == 0 for all types; price <= 0 for limit/IOC
+  // only — same checks, same order as NaiveBook) or pool exhaustion. The
+  // slot is allocated before the sweep because even a never-rests taker
+  // needs an id, so a full pool rejects up front regardless of what the
+  // sweep would have done.
   OrderId add(Side side, OrderType type, PriceTicks price, Qty qty) noexcept {
-    assert(type == OrderType::kLimit && "market/IOC land with Day 3 task 2");
-    if (qty == 0 || price <= 0) {
+    if (qty == 0) {
+      return kInvalidOrderId;
+    }
+    const bool is_market = type == OrderType::kMarket;
+    if (!is_market && price <= 0) {
       return kInvalidOrderId;
     }
     const OrderId id = pool_.alloc();
     if (id == kInvalidOrderId) {
       return kInvalidOrderId;
     }
-    const Qty remaining = Match(side, price, qty);
+    // A market order is a limit at an unbeatable price: sweeping with that
+    // sentinel crosses every level, so Match needs no market branch. Safe —
+    // Crosses only compares, never does arithmetic on the limit.
+    const PriceTicks limit = !is_market           ? price
+                             : side == Side::kBuy ? std::numeric_limits<PriceTicks>::max()
+                                                  : std::numeric_limits<PriceTicks>::min();
+    const Qty remaining = Match(side, limit, qty);
     const std::uint32_t index = index_of(id);
-    if (remaining == 0) {
+    if (remaining == 0 || type != OrderType::kLimit) {
+      // Fully filled, or a market/IOC remainder: nothing rests.
       pool_.free(index);
       return id;
     }
