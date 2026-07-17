@@ -58,14 +58,14 @@ documented limitations read as maturity, not weakness).
 
 ## Day 3 — Matching engine
 
-1. [ ] Aggressive limit matching: sweep opposing levels, partial fills, rest remainder. [feat: limit matching]
-2. [ ] Market + IOC handling. [feat: market/ioc]
-3. [ ] Event emission into a caller-supplied buffer/callback. [feat: events]
-4. [ ] Debug-build invariant checks (qty conservation, uncrossed book). [test: invariants]
-5. [ ] Extend differential harness to full matching + event-stream comparison. [test: differential matching]
-6. [ ] Edge cases: market on empty book, sweep-through-band, pool exhaustion, cancel-after-fill. [test: edge cases]
-7. [ ] `MatchingEngine` facade: consumes Command, produces Events. [feat: engine facade]
-8. [ ] Zero-allocation test (operator new counter). [test: zero alloc]
+1. [x] Aggressive limit matching: sweep opposing levels, partial fills, rest remainder. [feat: limit matching]
+2. [x] Market + IOC handling. [feat: market/ioc]
+3. [x] Event emission into a caller-supplied buffer/callback. [feat: events]
+4. [x] Debug-build invariant checks (qty conservation, uncrossed book). [test: invariants]
+5. [x] Extend differential harness to full matching + event-stream comparison. [test: differential matching]
+6. [x] Edge cases: market on empty book, sweep-through-band, pool exhaustion, cancel-after-fill. [test: edge cases]
+7. [x] `MatchingEngine` facade: consumes Command, produces Events. [feat: engine facade]
+8. [x] Zero-allocation test (operator new counter). [test: zero alloc]
 
 ## Day 4 — Concurrency
 
