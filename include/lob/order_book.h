@@ -79,6 +79,7 @@ class OrderBook {
                              : side == Side::kBuy ? std::numeric_limits<PriceTicks>::max()
                                                   : std::numeric_limits<PriceTicks>::min();
     const Qty remaining = Match(side, limit, qty, id, sink);
+    assert(remaining <= qty && "fill accounting underflow");
     const std::uint32_t index = index_of(id);
     if (remaining == 0 || type != OrderType::kLimit) {
       // Fully filled, or a market/IOC remainder: nothing rests.
@@ -87,6 +88,7 @@ class OrderBook {
             MakeEvent(EventType::kCanceled, side, RejectReason::kNone, remaining, 0, order_px, id));
       }
       pool_.free(index);
+      assert(uncrossed() && "matching left the book crossed");
       return id;
     }
     Order& order = pool_[index];
@@ -97,6 +99,7 @@ class OrderBook {
     order.type = type;
     order.flags = 0;
     ladder(side).push_order(pool_, index);
+    assert(uncrossed() && "matching left the book crossed");
     return id;
   }
 
@@ -188,9 +191,34 @@ class OrderBook {
 
   bool contains(OrderId id) const noexcept { return pool_.find(id) != nullptr; }
 
+  // Full-book invariant verification (DESIGN.md §5, §10.3): both ladders'
+  // structural checks (FIFO links, level aggregates, best cursors — see
+  // PriceLadder::check_invariants), pool census == resting orders (no order
+  // leaked or double-resting; matching never leaves an in-flight taker
+  // live), and an uncrossed book. O(band + orders) — call from tests and
+  // periodically from harnesses; the hot path asserts only the cheap subset
+  // per op. Deliberately invalid for books crossed via add_limit (the Day-2
+  // rest-without-matching primitive). Debug builds only; no-op under NDEBUG.
+  void check_invariants() const noexcept {
+#ifndef NDEBUG
+    const PriceLadder::Census bids = bids_.check_invariants(pool_);
+    const PriceLadder::Census asks = asks_.check_invariants(pool_);
+    assert(bids.order_count + asks.order_count == pool_.live_count() &&
+           "pool live_count != resting orders");
+    assert(uncrossed() && "book is crossed");
+#endif
+  }
+
  private:
   PriceLadder& ladder(Side side) noexcept { return side == Side::kBuy ? bids_ : asks_; }
   const PriceLadder& ladder(Side side) const noexcept { return side == Side::kBuy ? bids_ : asks_; }
+
+  // Matching must never leave the book crossed. add_limit can (by design),
+  // which is why cancel() does not assert this: a cancel cannot cross a
+  // book, and the Day-2 harness cancels on deliberately crossed ones.
+  bool uncrossed() const noexcept {
+    return bids_.empty() || asks_.empty() || bids_.best_price() < asks_.best_price();
+  }
 
   // A buy crosses levels priced at or below its limit; a sell at or above.
   static bool Crosses(Side taker_side, PriceTicks limit_price, PriceTicks level_price) noexcept {
@@ -220,6 +248,7 @@ class OrderBook {
       const auto maker_idx = static_cast<std::uint32_t>(level.head_idx);
       Order& maker = pool_[maker_idx];
       const Qty fill = std::min(remaining, maker.remaining);
+      assert(fill > 0 && "zero-qty fill: sweep would not progress");
       remaining -= fill;
       const Qty maker_left = maker.remaining - fill;
       sink(MakeEvent(EventType::kTraded, maker.side, RejectReason::kNone, fill, maker_left,

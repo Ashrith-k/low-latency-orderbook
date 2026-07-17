@@ -217,6 +217,74 @@ class PriceLadder {
 
   Side side() const noexcept { return side_; }
 
+  // What a full-ladder walk found; OrderBook cross-checks it against the pool.
+  struct Census {
+    std::uint64_t order_count = 0;
+    std::uint64_t total_qty = 0;
+  };
+
+  // Full-ladder invariant verification (DESIGN.md §5, §10.3): every band and
+  // overflow level's FIFO links are symmetric and its aggregates match a walk
+  // of its orders; every order is live, on this side, at this price, with the
+  // right level_idx and 1 <= remaining <= qty; the best cursor names the true
+  // best non-empty price; overflow entries are non-empty and out-of-band.
+  // O(band + orders): for tests and periodic harness checks, never per-op on
+  // the hot path. Debug builds only — a no-op census under NDEBUG.
+  Census check_invariants([[maybe_unused]] const OrderPool& pool) const noexcept {
+    Census census;
+#ifndef NDEBUG
+    PriceTicks best_seen = 0;
+    bool any = false;
+    auto check_level = [&](PriceTicks price, const PriceLevel& level, std::int32_t level_idx) {
+      if (level.empty()) {
+        assert(level.tail_idx == kNullIdx && level.order_count == 0 && level.total_qty == 0 &&
+               "empty level with residue");
+        return;
+      }
+      std::uint32_t count = 0;
+      std::uint64_t qty = 0;
+      std::int32_t prev = kNullIdx;
+      for (std::int32_t idx = level.head_idx; idx != kNullIdx;
+           idx = pool[static_cast<std::uint32_t>(idx)].next_idx) {
+        const Order& order = pool[static_cast<std::uint32_t>(idx)];
+        assert(order.prev_idx == prev && "FIFO links asymmetric");
+        assert(order.order_id != kInvalidOrderId &&
+               index_of(order.order_id) == static_cast<std::uint32_t>(idx) &&
+               "order id does not name its own slot");
+        assert(order.side == side_ && "order resting on the wrong side");
+        assert(order.price_ticks == price && "order price != level price");
+        assert(order.level_idx == level_idx && "order level_idx does not name its level");
+        assert(order.remaining >= 1 && order.remaining <= order.qty && "remaining out of range");
+        ++count;
+        qty += order.remaining;
+        prev = idx;
+      }
+      assert(prev == level.tail_idx && "tail does not name the last order");
+      assert(count == level.order_count && "order_count drifted from the FIFO");
+      assert(qty == level.total_qty && "total_qty drifted from the orders (qty conservation)");
+      const bool better = side_ == Side::kBuy ? price > best_seen : price < best_seen;
+      if (!any || better) {
+        best_seen = price;
+        any = true;
+      }
+      census.order_count += count;
+      census.total_qty += qty;
+    };
+    for (std::size_t off = 0; off < levels_.size(); ++off) {
+      check_level(low_price_ + static_cast<PriceTicks>(off), levels_[off],
+                  static_cast<std::int32_t>(off));
+    }
+    for (const auto& [price, level] : overflow_) {
+      assert(!in_band(price) && "overflow level inside the band");
+      assert(!level.empty() && "empty overflow level not erased");
+      check_level(price, level, kOverflowIdx);
+    }
+    assert(empty() == !any && "empty() disagrees with the walk");
+    assert((!any || best_price() == best_seen) && "best cursor drifted from the true best");
+#endif
+    return census;
+  }
+
  private:
   // "Better" toward the front of the book: higher for bids, lower for asks.
   bool IsBetter(std::int32_t lhs, std::int32_t rhs) const noexcept {
