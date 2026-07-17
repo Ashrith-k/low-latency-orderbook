@@ -36,6 +36,7 @@ endforeach()
 add_executable(lob_tests
   differential_add_cancel_test.cc
   differential_matching_test.cc
+  edge_cases_test.cc
   invariants_test.cc
   naive_book_test.cc
   order_book_test.cc
