@@ -38,6 +38,7 @@ add_executable(lob_tests
   differential_matching_test.cc
   edge_cases_test.cc
   invariants_test.cc
+  matching_engine_test.cc
   naive_book_test.cc
   order_book_test.cc
   order_pool_test.cc
