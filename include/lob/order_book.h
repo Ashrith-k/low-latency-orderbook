@@ -1,6 +1,8 @@
 #ifndef LOB_ORDER_BOOK_H_
 #define LOB_ORDER_BOOK_H_
 
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <optional>
 
@@ -12,9 +14,10 @@ namespace lob {
 
 // ---------------------------------------------------------------------------
 // OrderBook: the optimized book — an OrderPool plus one PriceLadder per side
-// (DESIGN.md §4). This task rests limit orders only; matching lands Day 3.
-// The query surface deliberately mirrors NaiveBook so the differential
-// harness can compare the two books call-for-call.
+// (DESIGN.md §4). add() is the matching entry point (price-time priority,
+// DESIGN.md §5); add_limit() is the rest-only primitive kept for the
+// differential harness. The query surface deliberately mirrors NaiveBook so
+// the harness can compare the two books call-for-call.
 // ---------------------------------------------------------------------------
 
 class OrderBook {
@@ -25,6 +28,44 @@ class OrderBook {
       : pool_(pool_capacity),
         bids_(Side::kBuy, anchor_price, band_radius),
         asks_(Side::kSell, anchor_price, band_radius) {}
+
+  // Full matching entry point (NaiveBook::add and naive_book_test.cc are the
+  // executable spec): sweeps the opposite side best level first, FIFO within
+  // a level, partial fills; every fill executes at the resting order's price.
+  // The unfilled remainder rests at the limit price. Limit orders only until
+  // Day 3 task 2 — a non-limit type is a precondition violation for now.
+  // Events land with Day 3 task 3.
+  // Returns the minted id — a fully filled order is already gone from the
+  // book, but its id is still real (and permanently stale) — or
+  // kInvalidOrderId on validation failure (same checks, same order as
+  // NaiveBook) or pool exhaustion. The slot is allocated before the sweep
+  // because even a fully-filled-never-rests taker needs an id, so a full
+  // pool rejects up front regardless of what the sweep would have done.
+  OrderId add(Side side, OrderType type, PriceTicks price, Qty qty) noexcept {
+    assert(type == OrderType::kLimit && "market/IOC land with Day 3 task 2");
+    if (qty == 0 || price <= 0) {
+      return kInvalidOrderId;
+    }
+    const OrderId id = pool_.alloc();
+    if (id == kInvalidOrderId) {
+      return kInvalidOrderId;
+    }
+    const Qty remaining = Match(side, price, qty);
+    const std::uint32_t index = index_of(id);
+    if (remaining == 0) {
+      pool_.free(index);
+      return id;
+    }
+    Order& order = pool_[index];
+    order.price_ticks = price;
+    order.qty = qty;
+    order.remaining = remaining;
+    order.side = side;
+    order.type = type;
+    order.flags = 0;
+    ladder(side).push_order(pool_, index);
+    return id;
+  }
 
   // Rests a limit order without matching (crossing prices rest too, exactly
   // like NaiveBook::add_limit — the Day-2 differential harness depends on
@@ -96,6 +137,41 @@ class OrderBook {
  private:
   PriceLadder& ladder(Side side) noexcept { return side == Side::kBuy ? bids_ : asks_; }
   const PriceLadder& ladder(Side side) const noexcept { return side == Side::kBuy ? bids_ : asks_; }
+
+  // A buy crosses levels priced at or below its limit; a sell at or above.
+  static bool Crosses(Side taker_side, PriceTicks limit_price, PriceTicks level_price) noexcept {
+    return taker_side == Side::kBuy ? level_price <= limit_price : level_price >= limit_price;
+  }
+
+  // Sweeps the side opposite `taker_side` while the taker has quantity left
+  // and its limit crosses the best opposing level; fills hit the level head
+  // (FIFO = time priority). A fully filled maker is remove_order'ed BEFORE
+  // its remaining is touched — unlink debits total_qty by that remaining —
+  // then its slot is recycled. A partially filled maker keeps its FIFO
+  // place, so its remaining and the level aggregate are debited by hand
+  // (unlink is the only level op that maintains total_qty implicitly).
+  // Returns the taker's unfilled remainder.
+  Qty Match(Side taker_side, PriceTicks limit_price, Qty qty) noexcept {
+    PriceLadder& opposite = ladder(taker_side == Side::kBuy ? Side::kSell : Side::kBuy);
+    Qty remaining = qty;
+    while (remaining > 0 && !opposite.empty() &&
+           Crosses(taker_side, limit_price, opposite.best_price())) {
+      PriceLevel& level = opposite.best_level();
+      assert(level.head_idx != kNullIdx && "best level of a non-empty side cannot be empty");
+      const auto maker_idx = static_cast<std::uint32_t>(level.head_idx);
+      Order& maker = pool_[maker_idx];
+      const Qty fill = std::min(remaining, maker.remaining);
+      remaining -= fill;
+      if (fill == maker.remaining) {
+        opposite.remove_order(pool_, maker_idx);
+        pool_.free(maker_idx);
+      } else {
+        maker.remaining -= fill;
+        level.total_qty -= fill;
+      }
+    }
+    return remaining;
+  }
 
   OrderPool pool_;
   PriceLadder bids_;

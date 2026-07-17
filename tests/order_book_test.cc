@@ -234,5 +234,192 @@ TEST(OrderBookCancel, FreedSlotIsReusable) {
   EXPECT_EQ(book.best_ask(), kAnchor + 2);
 }
 
+// ---------------------------------------------------------------------------
+// Matching (Day 3 task 1): aggressive limit orders sweep the opposite side
+// best price first, FIFO within a level, partial fills; the remainder rests.
+// NaiveBook::add is the executable spec; until task 3 emits events, these
+// tests verify through book state alone.
+// ---------------------------------------------------------------------------
+
+TEST(OrderBookMatch, NonCrossingLimitRests) {
+  OrderBook book = MakeBook();
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 2, 10);
+  const OrderId bid = book.add(Side::kBuy, OrderType::kLimit, kAnchor - 2, 5);
+
+  ASSERT_NE(bid, kInvalidOrderId);
+  EXPECT_TRUE(book.contains(bid));
+  EXPECT_EQ(book.best_bid(), kAnchor - 2);
+  EXPECT_EQ(book.best_ask(), kAnchor + 2);
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 2), 10u);
+  EXPECT_EQ(book.open_orders(), 2u);
+}
+
+TEST(OrderBookMatch, ValidationRejects) {
+  OrderBook book = MakeBook();
+  EXPECT_EQ(book.add(Side::kBuy, OrderType::kLimit, kAnchor, 0), kInvalidOrderId);
+  EXPECT_EQ(book.add(Side::kBuy, OrderType::kLimit, 0, 5), kInvalidOrderId);
+  EXPECT_EQ(book.add(Side::kBuy, OrderType::kLimit, -3, 5), kInvalidOrderId);
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+// A taker at exactly the best opposing price crosses (<=, not <).
+TEST(OrderBookMatch, ExactFillRemovesMakerAndTaker) {
+  OrderBook book = MakeBook();
+  const OrderId maker = book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 10);
+  const OrderId taker = book.add(Side::kBuy, OrderType::kLimit, kAnchor + 1, 10);
+
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_FALSE(book.contains(maker));
+  EXPECT_FALSE(book.contains(taker));  // fully filled, never rested
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 0u);
+  EXPECT_EQ(book.orders_at(Side::kSell, kAnchor + 1), 0u);
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+TEST(OrderBookMatch, PartialFillLeavesMakerRemainder) {
+  OrderBook book = MakeBook();
+  const OrderId maker = book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 10);
+  const OrderId taker = book.add(Side::kBuy, OrderType::kLimit, kAnchor + 3, 4);
+
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_FALSE(book.contains(taker));
+  EXPECT_TRUE(book.contains(maker));
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 6u);
+  EXPECT_EQ(book.orders_at(Side::kSell, kAnchor + 1), 1u);
+  EXPECT_EQ(book.best_ask(), kAnchor + 1);
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.open_orders(), 1u);
+}
+
+TEST(OrderBookMatch, TakerRemainderRestsAtLimitPrice) {
+  OrderBook book = MakeBook();
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 10);
+  const OrderId taker = book.add(Side::kBuy, OrderType::kLimit, kAnchor + 2, 15);
+
+  ASSERT_NE(taker, kInvalidOrderId);
+  EXPECT_TRUE(book.contains(taker));
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+  EXPECT_EQ(book.best_bid(), kAnchor + 2);
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor + 2), 5u);
+  EXPECT_EQ(book.orders_at(Side::kBuy, kAnchor + 2), 1u);
+  EXPECT_EQ(book.open_orders(), 1u);
+}
+
+TEST(OrderBookMatch, FifoWithinLevel) {
+  OrderBook book = MakeBook();
+  const OrderId first = book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 5);
+  const OrderId second = book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 7);
+  const OrderId third = book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 9);
+
+  book.add(Side::kBuy, OrderType::kLimit, kAnchor + 1, 8);  // 5 fill first, 3 partial second
+
+  EXPECT_FALSE(book.contains(first));
+  EXPECT_TRUE(book.contains(second));
+  EXPECT_TRUE(book.contains(third));
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 13u);  // 4 + 9
+  EXPECT_EQ(book.orders_at(Side::kSell, kAnchor + 1), 2u);
+}
+
+TEST(OrderBookMatch, SweepsLevelsBestFirstAndStopsAtLimit) {
+  OrderBook book = MakeBook();
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 5);
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 2, 5);
+  const OrderId untouched = book.add(Side::kSell, OrderType::kLimit, kAnchor + 4, 5);
+
+  const OrderId taker = book.add(Side::kBuy, OrderType::kLimit, kAnchor + 2, 12);
+
+  // 5 @ +1 then 5 @ +2 fill; +4 does not cross, so the remainder 2 rests.
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 0u);
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 2), 0u);
+  EXPECT_TRUE(book.contains(untouched));
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 4), 5u);
+  EXPECT_EQ(book.best_ask(), kAnchor + 4);
+  EXPECT_TRUE(book.contains(taker));
+  EXPECT_EQ(book.best_bid(), kAnchor + 2);
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor + 2), 2u);
+  EXPECT_EQ(book.open_orders(), 2u);
+}
+
+TEST(OrderBookMatch, SellAggressorSweepsBidsMirror) {
+  OrderBook book = MakeBook();
+  book.add(Side::kBuy, OrderType::kLimit, kAnchor - 1, 5);
+  book.add(Side::kBuy, OrderType::kLimit, kAnchor - 2, 5);
+  book.add(Side::kBuy, OrderType::kLimit, kAnchor - 4, 5);
+
+  const OrderId taker = book.add(Side::kSell, OrderType::kLimit, kAnchor - 2, 12);
+
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor - 1), 0u);
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor - 2), 0u);
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor - 4), 5u);
+  EXPECT_EQ(book.best_bid(), kAnchor - 4);
+  EXPECT_TRUE(book.contains(taker));
+  EXPECT_EQ(book.best_ask(), kAnchor - 2);
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor - 2), 2u);
+}
+
+TEST(OrderBookMatch, FilledMakerIdIsStaleForCancel) {
+  OrderBook book = MakeBook();
+  const OrderId maker = book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 5);
+  book.add(Side::kBuy, OrderType::kLimit, kAnchor + 1, 5);
+
+  EXPECT_FALSE(book.cancel(maker));
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+// Exercises the by-hand total_qty debit: if the partial fill forgot it, this
+// cancel would leave phantom quantity (or trip unlink's aggregate assert).
+TEST(OrderBookMatch, CancelAfterPartialFillRemovesRemainder) {
+  OrderBook book = MakeBook();
+  const OrderId maker = book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 10);
+  book.add(Side::kBuy, OrderType::kLimit, kAnchor + 1, 4);
+
+  ASSERT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 6u);
+  EXPECT_TRUE(book.cancel(maker));
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 0u);
+  EXPECT_EQ(book.orders_at(Side::kSell, kAnchor + 1), 0u);
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+TEST(OrderBookMatch, RestedRemainderIsMatchableAndCancelable) {
+  OrderBook book = MakeBook();
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 10);
+  const OrderId taker = book.add(Side::kBuy, OrderType::kLimit, kAnchor + 2, 15);  // 5 rest @ +2
+
+  // The rested remainder is a first-class resting order: it can be hit...
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 2, 3);
+  EXPECT_EQ(book.qty_at(Side::kBuy, kAnchor + 2), 2u);
+  // ...and canceled.
+  EXPECT_TRUE(book.cancel(taker));
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.open_orders(), 0u);
+}
+
+// The slot is minted before the sweep, so a full pool rejects even an order
+// that would have fully filled without resting.
+TEST(OrderBookMatch, PoolExhaustionRejectsBeforeMatching) {
+  OrderBook book = MakeBook(/*pool_capacity=*/1);
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 10);
+
+  EXPECT_EQ(book.add(Side::kBuy, OrderType::kLimit, kAnchor + 1, 10), kInvalidOrderId);
+  EXPECT_EQ(book.qty_at(Side::kSell, kAnchor + 1), 10u);
+  EXPECT_EQ(book.open_orders(), 1u);
+}
+
+TEST(OrderBookMatch, FilledSlotsAreRecycled) {
+  OrderBook book = MakeBook(/*pool_capacity=*/2);
+  book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 5);
+  const OrderId taker = book.add(Side::kBuy, OrderType::kLimit, kAnchor + 1, 5);
+  ASSERT_NE(taker, kInvalidOrderId);
+  ASSERT_EQ(book.open_orders(), 0u);
+
+  // Maker and taker slots are both free again: two fresh orders fit.
+  EXPECT_NE(book.add(Side::kBuy, OrderType::kLimit, kAnchor - 1, 1), kInvalidOrderId);
+  EXPECT_NE(book.add(Side::kSell, OrderType::kLimit, kAnchor + 1, 1), kInvalidOrderId);
+  EXPECT_EQ(book.open_orders(), 2u);
+}
+
 }  // namespace
 }  // namespace lob
