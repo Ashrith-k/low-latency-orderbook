@@ -48,5 +48,12 @@ add_executable(lob_tests
   types_test.cc)
 target_link_libraries(lob_tests PRIVATE lob lob_warnings GTest::gtest_main)
 
+# The zero-alloc test replaces global operator new to count allocations — a
+# binary-wide property — so it owns its own executable instead of joining
+# lob_tests.
+add_executable(lob_zero_alloc_test zero_alloc_test.cc)
+target_link_libraries(lob_zero_alloc_test PRIVATE lob lob_warnings GTest::gtest_main)
+
 include(GoogleTest)
 gtest_discover_tests(lob_tests)
+gtest_discover_tests(lob_zero_alloc_test)
