@@ -39,3 +39,20 @@ add_executable(lob_bench
   matching_bench.cc)
 target_link_libraries(lob_bench PRIVATE lob lob_warnings benchmark::benchmark_main
                                         Threads::Threads)
+
+# ---------------------------------------------------------------------------
+# End-to-end pipeline benchmark (Day 6 task 3): a standalone harness, not a
+# Google Benchmark target — it reports per-op-type latency percentiles from
+# a threaded pipeline, which doesn't fit GB's per-iteration timing model.
+# Logic lives in e2e_bench_lib.h (thin-main pattern like tools/lob_replay);
+# it reuses the replay CLI's parse/validate helpers, hence the tools include.
+# ---------------------------------------------------------------------------
+add_executable(lob_e2e_bench lob_e2e_bench.cc)
+target_link_libraries(lob_e2e_bench PRIVATE lob lob_warnings Threads::Threads)
+target_include_directories(lob_e2e_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
+
+# One smoke test of the real binary — the gtest suite covers run_e2e_cli()'s
+# logic; this proves the executable links and runs.
+if(LOB_BUILD_TESTS)
+  add_test(NAME lob_e2e_bench_help_smoke COMMAND lob_e2e_bench --help)
+endif()

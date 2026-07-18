@@ -91,6 +91,17 @@ add_executable(lob_async_logger_test async_logger_test.cc)
 target_link_libraries(lob_async_logger_test PRIVATE lob lob_warnings GTest::gtest_main
                                                     Threads::Threads)
 
+# E2e bench CLI tests (Day 6 task 3): drive bench/e2e_bench_lib.h's
+# run_e2e_cli(), which spins up the full four-thread pipeline — concurrency-
+# labeled so the TSan CI job covers it. The lib reuses the replay CLI's
+# helpers, hence both include dirs.
+add_executable(lob_e2e_bench_test e2e_bench_test.cc)
+target_link_libraries(lob_e2e_bench_test PRIVATE lob lob_warnings GTest::gtest_main
+                                                 Threads::Threads)
+target_include_directories(lob_e2e_bench_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../bench
+  ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
+
 include(GoogleTest)
 gtest_discover_tests(lob_tests)
 if(TARGET lob_zero_alloc_test)
@@ -99,3 +110,4 @@ endif()
 gtest_discover_tests(lob_spsc_stress_test PROPERTIES LABELS concurrency)
 gtest_discover_tests(lob_pipeline_test PROPERTIES LABELS concurrency)
 gtest_discover_tests(lob_async_logger_test PROPERTIES LABELS concurrency)
+gtest_discover_tests(lob_e2e_bench_test PROPERTIES LABELS concurrency)
