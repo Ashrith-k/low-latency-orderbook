@@ -45,6 +45,7 @@ add_executable(lob_tests
   price_ladder_test.cc
   price_level_test.cc
   smoke_test.cc
+  spsc_queue_test.cc
   types_test.cc)
 target_link_libraries(lob_tests PRIVATE lob lob_warnings GTest::gtest_main)
 
