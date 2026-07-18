@@ -46,6 +46,7 @@ add_executable(lob_tests
   order_pool_test.cc
   price_ladder_test.cc
   price_level_test.cc
+  replay_format_test.cc
   smoke_test.cc
   spsc_queue_test.cc
   types_test.cc

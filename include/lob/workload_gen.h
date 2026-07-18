@@ -76,10 +76,27 @@ struct WorkloadConfig {
   std::uint32_t walk_one_in = 4;
   std::uint32_t max_walk_step = 2;
   std::uint32_t walk_radius = kDefaultBandRadius;
+
+  std::uint32_t pad0 = 0;  // explicit padding; keep zero
 };
 
-// Task 4 serializes the config into the replay file header verbatim.
+// The replay file header (replay_format.h) embeds this struct verbatim, so it
+// is wire format: explicit padding, byte-determined, offsets frozen (the
+// file's version field guards any future change). EngineConfig rides along —
+// its 16 packed bytes are part of the layout.
+static_assert(sizeof(EngineConfig) == 16);
+static_assert(sizeof(WorkloadConfig) == 72);
+static_assert(alignof(WorkloadConfig) == 8);
 static_assert(std::is_trivially_copyable_v<WorkloadConfig>);
+static_assert(std::is_standard_layout_v<WorkloadConfig>);
+static_assert(std::has_unique_object_representations_v<WorkloadConfig>);
+static_assert(offsetof(WorkloadConfig, engine) == 0);
+static_assert(offsetof(WorkloadConfig, seed) == 16);
+static_assert(offsetof(WorkloadConfig, limit_weight) == 24);
+static_assert(offsetof(WorkloadConfig, min_qty) == 40);
+static_assert(offsetof(WorkloadConfig, max_price_offset) == 48);
+static_assert(offsetof(WorkloadConfig, walk_one_in) == 56);
+static_assert(offsetof(WorkloadConfig, pad0) == 68);
 
 class WorkloadGenerator {
  public:
