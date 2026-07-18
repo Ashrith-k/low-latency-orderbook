@@ -103,6 +103,50 @@ TEST(SPSCQueueStress, CapacityOneBoundaryChurn) {
   EXPECT_TRUE(q.empty());
 }
 
+// Batched consumer against a single-push producer: try_pop_batch's one
+// release store per batch must hand back only fully-read slots, and FIFO
+// order must hold across batch boundaries of every size the race produces.
+TEST(SPSCQueueStress, BatchedConsumerFifoUnderContention) {
+  constexpr std::uint64_t kOps = 1'000'000;
+  SPSCQueue<std::uint64_t> q(64);
+
+  std::atomic<std::uint64_t> mismatches{0};
+  std::atomic<std::uint64_t> first_bad_index{0};
+  std::atomic<std::uint64_t> first_bad_value{0};
+
+  std::thread producer([&q] {
+    for (std::uint64_t i = 0; i < kOps; ++i) {
+      while (!q.try_push(i)) {
+        std::this_thread::yield();
+      }
+    }
+  });
+  std::thread consumer([&] {
+    std::uint64_t buf[64];
+    std::uint64_t expected = 0;
+    while (expected < kOps) {
+      const std::size_t n = q.try_pop_batch(buf, 64);
+      if (n == 0) {
+        std::this_thread::yield();
+        continue;
+      }
+      for (std::size_t i = 0; i < n; ++i, ++expected) {
+        if (buf[i] != expected && mismatches.fetch_add(1, std::memory_order_relaxed) == 0) {
+          first_bad_index.store(expected, std::memory_order_relaxed);
+          first_bad_value.store(buf[i], std::memory_order_relaxed);
+        }
+      }
+    }
+  });
+  producer.join();
+  consumer.join();
+
+  EXPECT_EQ(mismatches.load(std::memory_order_relaxed), 0u)
+      << "first mismatch at #" << first_bad_index.load(std::memory_order_relaxed) << ": got "
+      << first_bad_value.load(std::memory_order_relaxed);
+  EXPECT_TRUE(q.empty());
+}
+
 // Every Event field is a pure function of the sequence number, so the
 // consumer can recompute the expected 32 bytes and memcmp. A sequence check
 // alone only proves the indices are right; this proves the slot bytes were

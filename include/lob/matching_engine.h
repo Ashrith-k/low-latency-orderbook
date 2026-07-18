@@ -1,16 +1,25 @@
 #ifndef LOB_MATCHING_ENGINE_H_
 #define LOB_MATCHING_ENGINE_H_
 
+#include <array>
+#include <atomic>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 
 #include "lob/order_book.h"
 #include "lob/order_pool.h"
 #include "lob/price_ladder.h"
+#include "lob/spsc_queue.h"
 #include "lob/types.h"
 
 namespace lob {
+
+// Commands consumed per batched pop in MatchingEngine::run(): one
+// acquire/release pair per batch instead of per command. 256 × 24 B = 6 KiB
+// of engine-thread stack.
+inline constexpr std::size_t kEngineBatchSize = 256;
 
 // Startup configuration (DESIGN.md §7's `cfg`). All sizing happens at
 // construction; nothing here changes at runtime.
@@ -56,6 +65,41 @@ class MatchingEngine {
         return;
     }
     assert(false && "unknown CommandType");
+  }
+
+  // The engine-thread run loop (DESIGN.md §3): batch-pops the command ring
+  // and processes in FIFO order, forwarding events to `sink`. Busy-spins
+  // while idle — the engine thread owns its core, and parking would put a
+  // wakeup on the latency path. Returns the number of commands processed.
+  //
+  // Shutdown contract: the producer pushes its final command, then sets
+  // `stop` with release ordering, and pushes nothing afterwards. The loop
+  // drains the ring completely after observing stop, so no command is lost.
+  template <typename EventSink>
+  std::uint64_t run(SPSCQueue<Command>& commands, const std::atomic<bool>& stop,
+                    EventSink&& sink) noexcept {
+    std::array<Command, kEngineBatchSize> batch;
+    std::uint64_t processed = 0;
+    bool stopping = false;
+    for (;;) {
+      const std::size_t n = commands.try_pop_batch(batch.data(), batch.size());
+      for (std::size_t i = 0; i < n; ++i) {
+        process(batch[i], sink);
+      }
+      processed += n;
+      if (n != 0) {
+        continue;
+      }
+      if (stopping) {
+        // Empty pop after stop was observed: the acquire below ordered us
+        // after the producer's final push, so the ring is truly drained.
+        return processed;
+      }
+      // acquire: pairs with the producer's release store of stop after its
+      // final push — once stop is seen, the next pop attempt is guaranteed
+      // to see every command pushed before it (hence loop again, not break).
+      stopping = stop.load(std::memory_order_acquire);
+    }
   }
 
   // Direct-call convenience API (DESIGN.md §7): same semantics as process()

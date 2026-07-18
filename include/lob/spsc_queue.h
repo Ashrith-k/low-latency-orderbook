@@ -81,6 +81,38 @@ class SPSCQueue {
     return true;
   }
 
+  // Consumer thread only. Pops up to `max_items` (> 0) into out[0..n),
+  // preserving FIFO order; returns n, 0 when empty. At most one acquire
+  // refresh and exactly one release store cover the whole batch — the engine
+  // loop's amortization of ring synchronization (DESIGN.md §4.4).
+  std::size_t try_pop_batch(T* out, std::size_t max_items) noexcept {
+    assert(max_items > 0);
+    // relaxed: head_ is written only by this (consumer) thread, so its own
+    // last store is always visible without ordering.
+    const std::uint64_t head = head_.load(std::memory_order_relaxed);
+    std::uint64_t available = tail_cache_ - head;
+    if (available == 0) {
+      // acquire: pairs with the producer's release store of tail_ (the same
+      // edge as try_pop), so every slot read below is fully written.
+      tail_cache_ = tail_.load(std::memory_order_acquire);
+      available = tail_cache_ - head;
+      if (available == 0) {
+        return 0;
+      }
+    }
+    // Opportunistic batch: take what the cache already proves is available
+    // rather than paying an extra acquire load to look for more.
+    const std::uint64_t n =
+        available < static_cast<std::uint64_t>(max_items) ? available : max_items;
+    for (std::uint64_t i = 0; i < n; ++i) {
+      out[i] = slots_[(head + i) & mask_];
+    }
+    // release: hands all n slots back at once; the producer's acquire sees
+    // the free space only after every read above is done.
+    head_.store(head + n, std::memory_order_release);
+    return static_cast<std::size_t>(n);
+  }
+
   std::size_t capacity() const noexcept { return slots_.size(); }
 
   // Diagnostic snapshot: exact only when both threads are quiescent (each

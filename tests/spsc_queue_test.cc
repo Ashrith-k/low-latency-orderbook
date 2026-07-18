@@ -161,6 +161,102 @@ TEST(SPSCQueue, SizeTracksMixedOps) {
   EXPECT_EQ(q.size(), 0u);
 }
 
+// --- try_pop_batch (Day 4 task 4) -----------------------------------------
+
+TEST(SPSCQueue, BatchPopEmptyReturnsZero) {
+  SPSCQueue<std::uint64_t> q(8);
+  std::uint64_t buf[8] = {};
+  EXPECT_EQ(q.try_pop_batch(buf, 8), 0u);
+}
+
+TEST(SPSCQueue, BatchPopTakesUpToMaxInFifoOrder) {
+  SPSCQueue<std::uint64_t> q(8);
+  for (std::uint64_t i = 0; i < 6; ++i) {
+    ASSERT_TRUE(q.try_push(i));
+  }
+  std::uint64_t buf[8] = {};
+  ASSERT_EQ(q.try_pop_batch(buf, 4), 4u);
+  for (std::uint64_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(buf[i], i);
+  }
+  ASSERT_EQ(q.try_pop_batch(buf, 4), 2u);  // only the remainder is available
+  EXPECT_EQ(buf[0], 4u);
+  EXPECT_EQ(buf[1], 5u);
+  EXPECT_TRUE(q.empty());
+}
+
+TEST(SPSCQueue, BatchPopReturnsFewerThanMaxWhenShort) {
+  SPSCQueue<std::uint64_t> q(8);
+  ASSERT_TRUE(q.try_push(10));
+  ASSERT_TRUE(q.try_push(11));
+  std::uint64_t buf[8] = {};
+  ASSERT_EQ(q.try_pop_batch(buf, 8), 2u);
+  EXPECT_EQ(buf[0], 10u);
+  EXPECT_EQ(buf[1], 11u);
+}
+
+// One batch spanning the physical end of the ring: indices advanced past the
+// midpoint first, so the copy loop's masking must wrap mid-batch.
+TEST(SPSCQueue, BatchPopAcrossWrapBoundary) {
+  SPSCQueue<std::uint64_t> q(8);
+  std::uint64_t sink = 0;
+  for (std::uint64_t i = 0; i < 5; ++i) {
+    ASSERT_TRUE(q.try_push(i));
+    ASSERT_TRUE(q.try_pop(sink));
+  }
+  for (std::uint64_t i = 100; i < 108; ++i) {  // fills slots 5..7 then wraps to 0..4
+    ASSERT_TRUE(q.try_push(i));
+  }
+  std::uint64_t buf[8] = {};
+  ASSERT_EQ(q.try_pop_batch(buf, 8), 8u);
+  for (std::uint64_t i = 0; i < 8; ++i) {
+    EXPECT_EQ(buf[i], 100 + i);
+  }
+  EXPECT_TRUE(q.empty());
+}
+
+// A failed batch pop leaves tail_cache_ current; the next batch pop must
+// refresh it to see items pushed in between.
+TEST(SPSCQueue, BatchPopRefreshesCachedTail) {
+  SPSCQueue<std::uint64_t> q(8);
+  std::uint64_t buf[8] = {};
+  EXPECT_EQ(q.try_pop_batch(buf, 8), 0u);  // cache now current (empty)
+  ASSERT_TRUE(q.try_push(7));
+  ASSERT_TRUE(q.try_push(8));
+  ASSERT_EQ(q.try_pop_batch(buf, 8), 2u);  // stale cache says empty; must refresh
+  EXPECT_EQ(buf[0], 7u);
+  EXPECT_EQ(buf[1], 8u);
+}
+
+TEST(SPSCQueue, BatchPopInterleavesWithSinglePops) {
+  SPSCQueue<std::uint64_t> q(8);
+  for (std::uint64_t i = 0; i < 7; ++i) {
+    ASSERT_TRUE(q.try_push(i));
+  }
+  std::uint64_t out = 0;
+  ASSERT_TRUE(q.try_pop(out));
+  EXPECT_EQ(out, 0u);
+  std::uint64_t buf[4] = {};
+  ASSERT_EQ(q.try_pop_batch(buf, 3), 3u);
+  EXPECT_EQ(buf[0], 1u);
+  EXPECT_EQ(buf[2], 3u);
+  ASSERT_TRUE(q.try_pop(out));
+  EXPECT_EQ(out, 4u);
+  ASSERT_EQ(q.try_pop_batch(buf, 4), 2u);
+  EXPECT_EQ(buf[0], 5u);
+  EXPECT_EQ(buf[1], 6u);
+  EXPECT_TRUE(q.empty());
+}
+
+TEST(SPSCQueue, BatchPopCapacityOne) {
+  SPSCQueue<std::uint64_t> q(1);
+  ASSERT_TRUE(q.try_push(99));
+  std::uint64_t buf[2] = {};
+  ASSERT_EQ(q.try_pop_batch(buf, 2), 1u);
+  EXPECT_EQ(buf[0], 99u);
+  EXPECT_EQ(q.try_pop_batch(buf, 2), 0u);
+}
+
 // Command and Event are the rings' real cargo. Both have unique object
 // representations (static_asserted in types.h), so memcmp equality proves the
 // ring transported every byte.
