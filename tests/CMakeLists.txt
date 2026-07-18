@@ -71,9 +71,16 @@ add_executable(lob_spsc_stress_test spsc_queue_stress_test.cc)
 target_link_libraries(lob_spsc_stress_test PRIVATE lob lob_warnings GTest::gtest_main
                                                    Threads::Threads)
 
+# Full-pipeline threaded tests (Day 4 task 6 smoke; task 7 adds the long
+# stress). Same concurrency label: the TSan CI job runs these too.
+add_executable(lob_pipeline_test pipeline_smoke_test.cc)
+target_link_libraries(lob_pipeline_test PRIVATE lob lob_warnings GTest::gtest_main
+                                                Threads::Threads)
+
 include(GoogleTest)
 gtest_discover_tests(lob_tests)
 if(TARGET lob_zero_alloc_test)
   gtest_discover_tests(lob_zero_alloc_test)
 endif()
 gtest_discover_tests(lob_spsc_stress_test PROPERTIES LABELS concurrency)
+gtest_discover_tests(lob_pipeline_test PROPERTIES LABELS concurrency)
