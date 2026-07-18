@@ -281,6 +281,14 @@ Day 3:
   deletes call `free()` trips alloc-dealloc-mismatch (libstdc++ temporary
   buffers under gtest's stable_sort use nothrow new). All eight new forms
   and matching deletes are replaced.
+- **The counter-wiring probe calls `::operator new` directly instead of using
+  a new-expression** — found on CI's first clang×release run (that cell never
+  executed anywhere until Days 2–4 were pushed together): [expr.new]/10
+  permits eliding replaceable allocation functions for new-expressions, and
+  clang -O3 removed the probe's `new int`/`delete` pair outright, so the
+  counter never moved and the wiring test failed. A direct call is an
+  ordinary function call and must execute on every compiler at every
+  optimization level.
 
 Day 4:
 

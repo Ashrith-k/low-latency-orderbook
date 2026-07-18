@@ -107,12 +107,16 @@ constexpr PriceTicks kAnchor = 10'000;
 constexpr std::uint32_t kRadius = 256;
 
 // A counter that never counts is a test that never fails: prove the
-// replacement is wired, for both the plain and the aligned path.
+// replacement is wired, for both the plain and the aligned path. The plain
+// probe must CALL ::operator new directly: a new-expression here is legal
+// for the optimizer to elide entirely ([expr.new]/10 permits omitting
+// replaceable allocation functions — clang does so at -O3, caught on CI),
+// while a direct call is an ordinary function call and must happen.
 TEST(ZeroAlloc, CounterSeesOrdinaryAllocations) {
   const std::uint64_t before = AllocCount();
-  auto* p = new int(7);
+  void* p = ::operator new(sizeof(int));
   EXPECT_GT(AllocCount(), before);
-  delete p;
+  ::operator delete(p);
 
   const std::uint64_t before_aligned = AllocCount();
   std::vector<Order> aligned(4);  // alignas(64) element: aligned operator new
