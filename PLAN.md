@@ -89,13 +89,13 @@ documented limitations read as maturity, not weakness).
 
 ## Day 6 — Benchmarks and tuning
 
-1. [ ] Microbench: add/cancel, NaiveBook vs OrderBook. [bench: book micro]
-2. [ ] Microbench: matching throughput by book depth. [bench: matching]
-3. [ ] End-to-end bench: replay file through full pipeline, percentiles per op type. [bench: e2e]
-4. [ ] `scripts/perf_stat.sh` + record cache/branch/IPC numbers (bare metal if possible). [bench: perf counters]
-5. [ ] Profile; apply 1–2 *measured* optimizations (e.g. branch hints, prefetch on level walk, batch sizes). Keep before/after in `docs/optlog.md`. [perf: targeted opts]
-6. [ ] `tools/plot_bench.py` → latency percentile chart + naive-vs-optimized bar chart into `docs/img/`. [docs: plots]
-7. [ ] Final numbers table drafted for README. [docs: results table]
+1. [x] Microbench: add/cancel, NaiveBook vs OrderBook. [bench: book micro]
+2. [x] Microbench: matching throughput by book depth. [bench: matching]
+3. [x] End-to-end bench: replay file through full pipeline, percentiles per op type. [bench: e2e]
+4. [x] `scripts/perf_stat.sh` + record cache/branch/IPC numbers (bare metal if possible). [bench: perf counters]
+5. [x] Profile; apply 1–2 *measured* optimizations (e.g. branch hints, prefetch on level walk, batch sizes). Keep before/after in `docs/optlog.md`. [perf: targeted opts]
+6. [x] `tools/plot_bench.py` → latency percentile chart + naive-vs-optimized bar chart into `docs/img/`. [docs: plots]
+7. [x] Final numbers table drafted for README. [docs: results table]
 
 ## Day 7 — Polish and ship
 

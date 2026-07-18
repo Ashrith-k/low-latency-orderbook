@@ -1,17 +1,17 @@
 # PROGRESS.md — build log
 
-Status as of **2026-07-18**: **Days 1–5 complete** (Day 1: 13/13 tasks,
+Status as of **2026-07-18**: **Days 1–6 complete** (Day 1: 13/13 tasks,
 `0e15777..1ab59da`; Day 2: 9/9 tasks, `8603dbf..8b2f59a`; Day 3: 8/8 tasks,
 `864a12c..1c97a09`; Day 4: 7/7 tasks, `6335fd5..3135d20`; Day 5: 7/7 tasks,
-`a4b1b03..ab44e14`; one commit per task).
+`a4b1b03..ab44e14`; Day 6: 7/7 tasks, `19a5f62..5fb21ee`; one commit per task).
 CI green: {gcc-13, clang-17} × {debug, release}, ASan+UBSan, TSan
 (concurrency label), format gate.
-Test suite: 274 tests in debug/asan (269 in release: 6 death tests compile out
-under NDEBUG, 1 release-only variant compiles in; verified locally 9.8 s),
-including two 1M-op differential runs — add/cancel and full matching — and 19
-concurrency-labeled threaded tests across three binaries that the TSan job
-runs (~16 s instrumented). Two env-gated replay hooks
-(`LOB_DIFF_SEED`/`LOB_DIFF_MATCH_SEED`) skip unless a seed is exported.
+Test suite: 290 tests in debug/asan (285 in release: 6 death tests compile out
+under NDEBUG, 1 release-only variant compiles in), including two 1M-op
+differential runs — add/cancel and full matching — and 34 concurrency-labeled
+threaded tests across four binaries that the TSan job runs. Two env-gated
+replay hooks (`LOB_DIFF_SEED`/`LOB_DIFF_MATCH_SEED`) skip unless a seed is
+exported.
 
 ## What is implemented and tested so far
 
@@ -287,6 +287,78 @@ runs (~16 s instrumented). Two env-gated replay hooks
   `AsyncLogger::ring_high_water()` exposes its ring's mark. The replay CLI
   dropped its ad-hoc counters and prints from `engine.stats()`.
 
+**Benchmarks and tuning (Day 6, tasks 1–7)**
+
+All numbers below: release preset (gcc 13.3 `-O3`), AMD EPYC 7763 Codespace
+VM (2 vCPUs = SMT siblings of one physical core, unpinned), mean of
+repetitions — indicative per DESIGN §11; `docs/results.md` is the citable
+table.
+
+- `bench/book_micro_bench.cc` (task 1): BookAddRest (fill an empty book) and
+  BookSteadyAddCancel (64Ki-op 50/50 churn at constant depth), NaiveBook vs
+  OrderBook over depths 1024–65536 on identical pregenerated scripts.
+  Cancels name victims by *position* in the live-order set under a shared
+  swap-remove discipline, so both books execute structurally identical
+  sequences even though they mint different ids; every cancel hits the real
+  removal path. Untimed per-iteration setup via `optional::emplace` +
+  `PauseTiming`. Retired `bench/dummy_bench.cc`. Book wins 10.5–14.5×
+  (add/rest) and 5.2–6.0× (steady churn).
+- `bench/matching_bench.cc` (task 2) + `bench/script_rng.h` (shared
+  splitmix64 + harmonic-CDF sampling, extracted from task 1): MatchSteady —
+  maker/taker pairs at the mid over an untouched Zipf-shaped background
+  book, self-restoring so the timed loop needs no PauseTiming (book 3.5–3.8×
+  naive); MatchSweep — K makers one-per-level + one IOC sweeping all K,
+  alternating sides, two permanent floor orders keeping the bench on
+  per-level sweep cost (book 4.4–6.3×, gap widening with K: map
+  erase+rebalance per exhausted level vs cursor step). Found and recorded
+  the **empty-side pathology**: draining a side truly empty cost an
+  O(band_radius) cursor rescan (~0.9 µs) — fixed in task 5.
+- `bench/e2e_bench_lib.h` + `bench/lob_e2e_bench.cc` (task 3): the DESIGN §3
+  pipeline assembled for real — replay-file producer → command ring (64Ki) →
+  pinned engine thread → AsyncLogger ring → logger thread (null-device sink
+  by default, `--log` for a file). Per-command rdtsc pairs recorded into
+  four per-op-type LatencyRecorders on the engine thread; `--warmup N`
+  discards via reset at the boundary (default 10%); log records reuse the
+  command's admission timestamp (one rdtsc per command); `--csv` feeds the
+  plot tool. The engine loop mirrors `run()`'s batch/shutdown contract
+  bench-locally (run() deliberately has no per-command hook), and commands
+  are pre-validated before classification (the reader validates format
+  only). 15 tests drive `run_e2e_cli()` in a fourth concurrency-labeled
+  binary (counts reconcile exactly with `WorkloadCounts`), plus a binary
+  smoke. Result: **7.5M cmd/s through the four-thread pipeline; p50 41 ns,
+  p99 201 ns, p99.9 380 ns** (11M-command file, 10M measured).
+- `scripts/perf_stat.sh` (task 4): perf stat wrapper with the §11 counter
+  set + software counters, `-r N` mean±stddev, `--check` probe, and a
+  degradation ladder (install hint → paranoid hint → PMU-hidden note) in the
+  affinity.h spirit; shellcheck-clean, every path exercised. Empirical
+  finding recorded in the script header: **the Azure VM hides the PMU even
+  from root** — hardware rows all `<not supported>`; software counters
+  measured the pipeline's ~61K context switches/s vs ~300/s for the
+  single-threaded microbenches (direct evidence for the e2e tail maxima).
+- Targeted optimizations (task 5, `docs/optlog.md` has full before/after):
+  profiled via `perf record -e cpu-clock` (software event; ~85% of samples
+  inline into book code). **Kept:** (1) O(1) empty-side transition —
+  `PriceLadder` counts in-band orders and drops the cursor directly when
+  the count hits zero instead of the O(band) rescan; `MatchSweepDrain`
+  (floor-less variant, added as permanent regression guard) went from
+  **0.94M cmd/s (23× slower than the map) to 88.5M (4.6× faster)** at K=1;
+  invariant walk reconciles the counter. (2) One `best_price()` per fill in
+  `Match` via new `PriceLadder::level_at(price)` (+19–31% on sweeps).
+  **Rejected with numbers:** `[[likely]]`/`[[unlikely]]` on
+  validation/overflow branches — consistent +5–8% on one scenario and
+  −8–9% on another (layout roulette, the branches predict perfectly at
+  runtime anyway); reverted, null result logged.
+- `tools/plot_bench.py` (task 6): `latency` (e2e CSV → percentile chart)
+  and `compare` (Google Benchmark JSON → auto-paired naive-vs-book bars
+  with ratio labels) subcommands; byte-deterministic SVG output (fixed
+  hashsalt, no date) so regenerated charts diff cleanly; exit codes 0/1/2.
+  `docs/img/latency_percentiles.svg` + `docs/img/naive_vs_book.svg`
+  rendered from fresh post-opt runs.
+- `docs/results.md` (task 7): the README-ready results section — headline
+  ratios, full depth/breadth scaling tables (recomputed from one
+  self-consistent run), e2e percentile table, honest-tail narrative, and a
+  reproduce-commands block.
+
 ## Deviations from DESIGN.md and why
 
 Day 1 (unchanged):
@@ -454,46 +526,74 @@ Day 5:
   materializes. The event-less `submit`/`cancel` overloads now route
   through the counting sink wrapper, so both entry paths count identically.
 
+Day 6:
+
+- **Bench scripts don't reuse `WorkloadGenerator`** (tasks 1–2): its cancel
+  synthesis runs a full-matching shadow engine, so its ids are only valid on
+  a full-matching replay — useless for the structural add/cancel bench and
+  an unwanted coupling for the matching bench. Bench-local scripts
+  (`bench/script_rng.h`, positional cancel victims) drive both books
+  identically instead; the generator still owns the e2e workload.
+- **The e2e bench is a standalone harness, not a Google Benchmark target**:
+  per-op-type percentile tables over a four-thread pipeline don't fit GB's
+  per-iteration timing model. It follows the lob_replay thin-main pattern
+  (logic in `bench/e2e_bench_lib.h`, tested via `run_e2e_cli()`), reuses
+  the replay CLI's parse/validate helpers, and mirrors `run()`'s
+  batch-pop/shutdown contract bench-locally because run() deliberately has
+  no per-command hook (per-command rdtsc must bracket `process()`).
+- **The e2e harness pre-validates command enums** before the pipeline
+  starts: the replay reader validates format, not semantics, and
+  `classify()` indexes an array by kind/type while the engine only
+  debug-asserts — a corrupt-but-well-formed file must be refused, not UB.
+- **MatchSweep keeps two permanent floor orders; MatchSweepDrain exists
+  because it doesn't.** The floors keep the sweep bench measuring per-level
+  cost; the drain variant pins the empty-side transition and stays
+  registered so the fixed pathology can never silently return.
+- **Branch hints were tried and rejected on measurement** (optlog entry 3):
+  the honest half of "apply measured optimizations" is reverting the ones
+  that don't measure. Prefetch-on-level-walk wasn't attempted — the bench
+  levels hold ~1 order, so it would measure nothing here; left to
+  bare-metal with real multi-order levels.
+- **rdtsc stays unfenced in the e2e per-op timing** (the Day-5 decision
+  revisited on schedule): at 40–400 ns per op the few-ns skew is noise, and
+  the numbers never demanded the fence.
+
 ## Known issues / TODOs
 
 - **TSan on this Codespace requires `sudo sysctl vm.mmap_rnd_bits=28` each session**,
   otherwise TSan-instrumented binaries crash at startup (kernel ASLR entropy vs
   clang-17 TSan). The CI tsan job runs the same sysctl as a step.
-- Hardware perf counters are blocked in Codespaces; Day 6 `perf stat` numbers must come
-  from a bare-metal Linux box (documented limitation, per PLAN.md). The
-  false-sharing bench numbers carry the extra SMT-siblings caveat above.
+- **Every Day-6 number is a Codespaces number** — one bare-metal session
+  would upgrade the lot: IPC/cache/branch counters (the Azure VM hides the
+  PMU even from root; `scripts/perf_stat.sh` is ready), the false-sharing
+  cross-core deltas (SMT-siblings caveat from Day 4), the e2e tail maxima
+  (millisecond scheduler preemptions with four threads on 2 vCPUs), and a
+  `-march=native` release variant (deferred from Day 1, only worth measuring
+  on the machine it targets). `docs/results.md` carries the caveat inline.
 - The debug/asan suite wall time is still dominated by the two 1M-op
-  differential runs (Day 5 added ~2 s of fast tests). Fine for CI so far; if
-  it grows, gate the scale runs behind a ctest label and keep the 4×25k runs
-  as the default.
+  differential runs. Fine for CI so far; if it grows, gate the scale runs
+  behind a ctest label and keep the 4×25k runs as the default.
 - clang-tidy is configured but not yet enforced anywhere (no CI job, no script); the
   clean-up pass is Day 7 task 5.
-- `bench/dummy_bench.cc` is placeholder wiring; the false-sharing bench is
-  real, book/matching/e2e benches start Day 6.
-- **The AsyncLogger stage is not yet composed into the DESIGN §3 pipeline by
-  default** — the pieces snap together (engine sink → `make_log_record` →
-  `try_log`/`log`), but the end-to-end engine+logger assembly belongs to the
-  Day-6 e2e bench harness; nothing constructs it today outside tests.
-- The `lob_replay run` throughput line is wall-clock, single-run, unpinned —
-  labeled as such in its output; Day 6 owns the real methodology
-  (pinning, warmup, LatencyRecorder percentiles per op type).
-- README is a stub by design until measured v1.0 numbers exist.
+- The `lob_replay run` throughput line stays wall-clock and labeled
+  indicative — `lob_e2e_bench` owns the real methodology now (pinning,
+  warmup discard, per-op-type percentiles).
+- README is a stub by design; Day 7 task 1 assembles it from
+  `docs/results.md`, the `docs/img/` charts, and `docs/optlog.md`.
 - `NaiveBook` allocates freely and is slow by design — test/bench oracle only, never on
   the hot path.
 
 ## Next task
 
-**Day 6, task 1: Microbench: add/cancel, NaiveBook vs OrderBook.
-[bench: book micro]**
+**Day 7, task 1: README — pitch, architecture diagram, design decisions,
+results, build/run instructions, limitations, roadmap. [docs: readme]**
 
-Everything the benches need now exists: the release preset (verified green,
-269 tests), `WorkloadGenerator` for deterministic op streams,
-`LatencyRecorder` + `TscCalibration` for percentiles, `EngineStats` +
-`reset_stats()` for warmup-then-measure, and `lob_replay generate` for
-replay files. Task 1 is the Google-Benchmark micro comparison of
-add/cancel on `NaiveBook` vs `OrderBook` (the DESIGN §4.3 "array beats
-map" resume number): drive both with identical generated streams, report
-ops/s, and retire `bench/dummy_bench.cc`. Remember DESIGN §11's honesty
-rules — document CPU/kernel/flags, and note that Codespaces numbers are
-indicative (2 vCPUs are SMT siblings of one physical core; the
-false-sharing caveat from Day 4 applies to any cross-thread numbers).
+The raw material is all written: `docs/results.md` is the README-ready
+numbers section (headline ratios, scaling tables, e2e percentiles,
+reproduce commands), `docs/img/` has both charts, `docs/optlog.md` tells
+the "why an array beats a map" story with the measured worst-case fix
+(0.94M → 88.5M cmd/s), and DESIGN §3 has the pipeline diagram to render.
+Follow PLAN.md's README outline (engineering-blog style, plot at the top);
+keep DESIGN §11 honesty — every number travels with its environment, and
+the Codespaces caveats stay attached until a bare-metal rerun replaces
+them.
