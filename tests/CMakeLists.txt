@@ -34,6 +34,7 @@ endforeach()
 # Test executable. New test sources are appended here as modules land.
 # ---------------------------------------------------------------------------
 add_executable(lob_tests
+  affinity_test.cc
   differential_add_cancel_test.cc
   differential_matching_test.cc
   edge_cases_test.cc
