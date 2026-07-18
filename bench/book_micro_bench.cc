@@ -1,6 +1,5 @@
 #include <benchmark/benchmark.h>
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +10,7 @@
 #include "lob/order_book.h"
 #include "lob/price_ladder.h"
 #include "lob/types.h"
+#include "script_rng.h"
 
 // Day 6 task 1: the DESIGN §4.3 comparison — add/cancel on NaiveBook
 // (std::map + std::list baseline) vs OrderBook (banded-array ladder), driven
@@ -44,6 +44,10 @@
 // README-grade numbers come from the release preset, bare metal if possible.
 namespace {
 
+using lob::benchutil::MakeZipfCdf;
+using lob::benchutil::SampleOffset;
+using lob::benchutil::ScriptRng;
+
 constexpr lob::PriceTicks kMid = 100'000;  // fixed mid; anchor of the banded ladder
 constexpr std::uint32_t kMaxOffset = 256;  // quotes span mid ± [1, 257] — ~257 levels/side
 constexpr lob::Qty kMinQty = 1;
@@ -61,48 +65,6 @@ struct Op {
   lob::Side side = lob::Side::kBuy;
   bool is_add = false;
 };
-
-// splitmix64, same constants as workload_gen.h: deterministic scripts with
-// no <random> (whose distribution streams are stdlib-specific).
-class ScriptRng {
- public:
-  explicit ScriptRng(std::uint64_t seed) : state_(seed) {}
-
-  std::uint64_t NextU64() noexcept {
-    std::uint64_t z = (state_ += 0x9E3779B97F4A7C15ull);
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-    return z ^ (z >> 31);
-  }
-
-  // Modulo bias ~n/2^64: unmeasurable at these ranges (workload_gen.h).
-  std::uint64_t Bounded(std::uint64_t n) noexcept {
-    assert(n > 0);
-    return NextU64() % n;
-  }
-
- private:
-  std::uint64_t state_;
-};
-
-// Harmonic ("Zipf-ish", s = 1) CDF over offsets 0..kMaxOffset — the exact
-// weighting WorkloadGenerator uses: weight(k) ∝ 1/(k+1), floored at 1.
-std::vector<std::uint64_t> MakeZipfCdf() {
-  constexpr std::uint64_t kZipfScale = std::uint64_t{1} << 20;
-  std::vector<std::uint64_t> cdf;
-  cdf.reserve(std::size_t{kMaxOffset} + 1);
-  std::uint64_t acc = 0;
-  for (std::uint64_t k = 0; k <= kMaxOffset; ++k) {
-    acc += kZipfScale / (k + 1) + 1;
-    cdf.push_back(acc);
-  }
-  return cdf;
-}
-
-lob::PriceTicks SampleOffset(ScriptRng& rng, const std::vector<std::uint64_t>& cdf) {
-  const std::uint64_t r = rng.Bounded(cdf.back());
-  return static_cast<lob::PriceTicks>(std::upper_bound(cdf.begin(), cdf.end(), r) - cdf.begin());
-}
 
 Op MakeAdd(ScriptRng& rng, const std::vector<std::uint64_t>& cdf) {
   Op op;
@@ -210,7 +172,7 @@ template <typename Driver>
 void BM_BookAddRest(benchmark::State& state) {
   const auto depth = static_cast<std::size_t>(state.range(0));
   ScriptRng rng(kSeed);
-  const std::vector<std::uint64_t> cdf = MakeZipfCdf();
+  const std::vector<std::uint64_t> cdf = MakeZipfCdf(kMaxOffset);
   const std::vector<Op> script = MakeAddScript(depth, rng, cdf);
   std::vector<lob::OrderId> live;
   live.reserve(depth);
@@ -230,7 +192,7 @@ template <typename Driver>
 void BM_BookSteadyAddCancel(benchmark::State& state) {
   const auto depth = static_cast<std::size_t>(state.range(0));
   ScriptRng rng(kSeed);
-  const std::vector<std::uint64_t> cdf = MakeZipfCdf();
+  const std::vector<std::uint64_t> cdf = MakeZipfCdf(kMaxOffset);
   const std::vector<Op> prefill = MakeAddScript(depth, rng, cdf);
   const std::vector<Op> mixed = MakeMixedScript(depth, kMixedOps, rng, cdf);
   std::vector<lob::OrderId> live;

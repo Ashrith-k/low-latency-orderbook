@@ -35,6 +35,7 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 add_executable(lob_bench
   book_micro_bench.cc
-  false_sharing_bench.cc)
+  false_sharing_bench.cc
+  matching_bench.cc)
 target_link_libraries(lob_bench PRIVATE lob lob_warnings benchmark::benchmark_main
                                         Threads::Threads)
