@@ -58,3 +58,12 @@ option(LOB_BUILD_BENCH "Build the LOB benchmarks" ${PROJECT_IS_TOP_LEVEL})
 if(LOB_BUILD_BENCH)
   add_subdirectory(bench)
 endif()
+
+# ---------------------------------------------------------------------------
+# Command-line tools (lob_replay). Same top-level-only gating.
+# ---------------------------------------------------------------------------
+option(LOB_BUILD_TOOLS "Build the LOB command-line tools" ${PROJECT_IS_TOP_LEVEL})
+
+if(LOB_BUILD_TOOLS)
+  add_subdirectory(tools)
+endif()

@@ -46,12 +46,16 @@ add_executable(lob_tests
   order_pool_test.cc
   price_ladder_test.cc
   price_level_test.cc
+  replay_cli_test.cc
   replay_format_test.cc
   smoke_test.cc
   spsc_queue_test.cc
   types_test.cc
   workload_gen_test.cc)
 target_link_libraries(lob_tests PRIVATE lob lob_warnings GTest::gtest_main)
+# The CLI's logic is a header under tools/ (thin main() pattern); the tests
+# drive run_cli() directly.
+target_include_directories(lob_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
 
 # The zero-alloc test replaces global operator new to count allocations — a
 # binary-wide property — so it owns its own executable instead of joining
