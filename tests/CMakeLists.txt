@@ -77,6 +77,12 @@ add_executable(lob_pipeline_test pipeline_smoke_test.cc pipeline_stress_test.cc)
 target_link_libraries(lob_pipeline_test PRIVATE lob lob_warnings GTest::gtest_main
                                                 Threads::Threads)
 
+# AsyncLogger tests (Day 5 task 1): the logger owns a consumer thread, so the
+# whole binary is concurrency-labeled and runs under the TSan CI job.
+add_executable(lob_async_logger_test async_logger_test.cc)
+target_link_libraries(lob_async_logger_test PRIVATE lob lob_warnings GTest::gtest_main
+                                                    Threads::Threads)
+
 include(GoogleTest)
 gtest_discover_tests(lob_tests)
 if(TARGET lob_zero_alloc_test)
@@ -84,3 +90,4 @@ if(TARGET lob_zero_alloc_test)
 endif()
 gtest_discover_tests(lob_spsc_stress_test PROPERTIES LABELS concurrency)
 gtest_discover_tests(lob_pipeline_test PROPERTIES LABELS concurrency)
+gtest_discover_tests(lob_async_logger_test PROPERTIES LABELS concurrency)
