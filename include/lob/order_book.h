@@ -241,9 +241,14 @@ class OrderBook {
             EventSink&& sink) noexcept {
     PriceLadder& opposite = ladder(taker_side == Side::kBuy ? Side::kSell : Side::kBuy);
     Qty remaining = qty;
-    while (remaining > 0 && !opposite.empty() &&
-           Crosses(taker_side, limit_price, opposite.best_price())) {
-      PriceLevel& level = opposite.best_level();
+    while (remaining > 0 && !opposite.empty()) {
+      // One best-price computation per fill: the price feeds both the cross
+      // check and the level lookup (best_level() would recompute it).
+      const PriceTicks level_px = opposite.best_price();
+      if (!Crosses(taker_side, limit_price, level_px)) {
+        break;
+      }
+      PriceLevel& level = opposite.level_at(level_px);
       assert(level.head_idx != kNullIdx && "best level of a non-empty side cannot be empty");
       const auto maker_idx = static_cast<std::uint32_t>(level.head_idx);
       Order& maker = pool_[maker_idx];

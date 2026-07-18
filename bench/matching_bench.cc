@@ -31,6 +31,9 @@
 //     permanent floor orders (see BM_MatchSweep) keep the swept side from
 //     ever being truly empty. This isolates the per-level walk: map
 //     erase+rebalance per exhausted level vs the ladder's best-price cursor.
+//   MatchSweepDrain: MatchSweep without the floors — every round drains its
+//     side truly empty, pinning the ladder's empty-side transition cost (the
+//     Day-6 task-5 optimization target; see that scenario's comment).
 //
 // items_per_second == commands/s; the fills/s counter is exact by
 // construction (pairs, or rounds*K — note MatchSweep does K+1 commands per
@@ -187,6 +190,30 @@ void BM_MatchSteady(benchmark::State& state) {
       benchmark::Counter::kIsRate);
 }
 
+// MatchSweepDrain: BM_MatchSweep without the floor orders — every round
+// drains its side *truly* empty, hitting the ladder's empty-side transition
+// on every drain. This is the measuring instrument for the Day-6 task-5
+// O(1) empty-side cursor optimization (docs/optlog.md): before it, each
+// drain paid an O(band_radius) cursor rescan (~0.9 µs at the default
+// radius); after it, a counter check. Kept registered so the pathology can
+// never silently return.
+template <typename Driver>
+void BM_MatchSweepDrain(benchmark::State& state) {
+  const auto k = static_cast<std::uint32_t>(state.range(0));
+  ScriptRng rng(kSeed);
+  const std::vector<Op> script = MakeSweepScript(kSweepRounds, k, rng);
+  Driver driver(std::size_t{k} + 8);
+  for (auto _ : state) {
+    Replay(driver, script);
+    assert(driver.open_orders() == 0 && "every sweep round must drain the book empty");
+  }
+  state.SetItemsProcessed(static_cast<std::int64_t>(state.iterations()) *
+                          static_cast<std::int64_t>(script.size()));
+  state.counters["fills/s"] = benchmark::Counter(
+      static_cast<double>(state.iterations()) * static_cast<double>(kSweepRounds * k),
+      benchmark::Counter::kIsRate);
+}
+
 template <typename Driver>
 void BM_MatchSweep(benchmark::State& state) {
   const auto k = static_cast<std::uint32_t>(state.range(0));
@@ -234,6 +261,16 @@ BENCHMARK_TEMPLATE(BM_MatchSweep, NaiveDriver)
     ->Unit(benchmark::kMillisecond);
 BENCHMARK_TEMPLATE(BM_MatchSweep, BookDriver)
     ->Name("MatchSweep/book")
+    ->RangeMultiplier(4)
+    ->Range(1, 64)
+    ->Unit(benchmark::kMillisecond);
+BENCHMARK_TEMPLATE(BM_MatchSweepDrain, NaiveDriver)
+    ->Name("MatchSweepDrain/naive")
+    ->RangeMultiplier(4)
+    ->Range(1, 64)
+    ->Unit(benchmark::kMillisecond);
+BENCHMARK_TEMPLATE(BM_MatchSweepDrain, BookDriver)
+    ->Name("MatchSweepDrain/book")
     ->RangeMultiplier(4)
     ->Range(1, 64)
     ->Unit(benchmark::kMillisecond);

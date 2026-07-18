@@ -150,6 +150,7 @@ class PriceLadder {
     const auto offset = static_cast<std::int32_t>(order.price_ticks - low_price_);
     levels_[static_cast<std::size_t>(offset)].push_back(pool, order_idx);
     order.level_idx = offset;
+    ++band_orders_;
     if (best_offset_ == kNullIdx || IsBetter(offset, best_offset_)) {
       best_offset_ = offset;
     }
@@ -180,8 +181,18 @@ class PriceLadder {
     PriceLevel& level = levels_[static_cast<std::size_t>(offset)];
     level.unlink(pool, order_idx);
     order.level_idx = kNullIdx;
+    assert(band_orders_ > 0);
+    --band_orders_;
     if (level.empty() && offset == best_offset_) {
-      AdvanceBest();
+      // O(1) empty-side transition (docs/optlog.md): with no in-band orders
+      // left there is nothing for AdvanceBest to find, and discovering that
+      // by scanning cost O(band) — ~0.9 µs at the default radius, measured
+      // ~23x worse than the map baseline when a side drains every round.
+      if (band_orders_ == 0) {
+        best_offset_ = kNullIdx;
+      } else {
+        AdvanceBest();
+      }
     }
   }
 
@@ -205,8 +216,11 @@ class PriceLadder {
                                : std::min(band_best, overflow_best);
   }
 
-  PriceLevel& best_level() noexcept {
-    const PriceTicks price = best_price();
+  // Mutable level lookup at a price the caller just obtained from
+  // best_price(), so the matching sweep pays one best-price computation per
+  // fill, not two (docs/optlog.md). Precondition: a level exists at `price`
+  // (always true in-band; overflow prices must currently rest).
+  PriceLevel& level_at(PriceTicks price) noexcept {
     if (in_band(price)) {
       return levels_[static_cast<std::size_t>(price - low_price_)];
     }
@@ -214,6 +228,8 @@ class PriceLadder {
     assert(it != overflow_.end());
     return it->second;
   }
+
+  PriceLevel& best_level() noexcept { return level_at(best_price()); }
 
   Side side() const noexcept { return side_; }
 
@@ -274,6 +290,9 @@ class PriceLadder {
       check_level(low_price_ + static_cast<PriceTicks>(off), levels_[off],
                   static_cast<std::int32_t>(off));
     }
+    // The census holds only band levels at this point, so it pins the
+    // band-order counter the O(1) empty-side transition depends on.
+    assert(census.order_count == band_orders_ && "band_orders_ drifted from the walk");
     for (const auto& [price, level] : overflow_) {
       assert(!in_band(price) && "overflow level inside the band");
       assert(!level.empty() && "empty overflow level not erased");
@@ -292,8 +311,12 @@ class PriceLadder {
   }
 
   // Steps the cursor from the just-emptied best level toward worse prices
-  // until a non-empty level or the band edge (then the side is empty).
+  // until a non-empty level. Precondition: band_orders_ > 0 (the caller
+  // handles the drained-empty case in O(1)), so the next non-empty level is
+  // typically a few sequential loads away; the band-edge fallback remains
+  // for defense in depth.
   void AdvanceBest() noexcept {
+    assert(band_orders_ > 0 && "AdvanceBest on an empty side: caller must short-circuit");
     const std::int32_t step = side_ == Side::kBuy ? -1 : 1;
     const std::int32_t end = side_ == Side::kBuy ? -1 : static_cast<std::int32_t>(levels_.size());
     for (std::int32_t off = best_offset_ + step; off != end; off += step) {
@@ -308,6 +331,10 @@ class PriceLadder {
   Side side_;
   PriceTicks low_price_;  // price of levels_[0]
   std::int32_t best_offset_ = kNullIdx;
+  // In-band resting orders on this side. One inc/dec per push/remove buys
+  // remove_order's O(1) empty-side transition (docs/optlog.md); u32 suffices
+  // — the pool caps live orders well below 2^32.
+  std::uint32_t band_orders_ = 0;
   std::vector<PriceLevel> levels_;
   // Out-of-band levels, keyed by price. Rare path; every entry is non-empty.
   std::map<PriceTicks, PriceLevel> overflow_;
