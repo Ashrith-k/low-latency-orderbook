@@ -75,6 +75,37 @@ jobs:
       - name: Test
         run: ctest --preset asan --output-on-failure
 
+  tsan:
+    name: tsan (clang)
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-17
+      CXX: clang++-17
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-17
+
+      # TSan-instrumented binaries crash at startup when kernel ASLR entropy
+      # (vm.mmap_rnd_bits, 32 on recent Ubuntu kernels) exceeds what the
+      # runtime tolerates; 28 is the documented workaround.
+      - name: Lower ASLR entropy for TSan
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Configure
+        run: cmake --preset tsan
+
+      - name: Build
+        run: cmake --build --preset tsan
+
+      # Threaded tests only: TSan finds nothing in the single-threaded suites
+      # but multiplies their 1M-op differential runs into minutes.
+      - name: Test (concurrency label)
+        run: ctest --preset tsan -L concurrency --output-on-failure
+
   format:
     name: format (clang-format)
     runs-on: ubuntu-24.04

@@ -51,10 +51,27 @@ target_link_libraries(lob_tests PRIVATE lob lob_warnings GTest::gtest_main)
 
 # The zero-alloc test replaces global operator new to count allocations — a
 # binary-wide property — so it owns its own executable instead of joining
-# lob_tests.
-add_executable(lob_zero_alloc_test zero_alloc_test.cc)
-target_link_libraries(lob_zero_alloc_test PRIVATE lob lob_warnings GTest::gtest_main)
+# lob_tests. Not built under TSan: libclang_rt.tsan_cxx strongly defines all
+# new/delete operators itself (link collision), and a zero-allocation claim
+# is single-threaded anyway.
+string(FIND "${CMAKE_CXX_FLAGS}" "-fsanitize=thread" _lob_tsan_flag_pos)
+if(_lob_tsan_flag_pos EQUAL -1)
+  add_executable(lob_zero_alloc_test zero_alloc_test.cc)
+  target_link_libraries(lob_zero_alloc_test PRIVATE lob lob_warnings GTest::gtest_main)
+endif()
+
+# Two-thread stress tests live in their own binary, labeled `concurrency`: the
+# TSan CI job runs exactly this label — the single-threaded 1M-op differential
+# suites would be minutes-slow under TSan while exercising no synchronization.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+add_executable(lob_spsc_stress_test spsc_queue_stress_test.cc)
+target_link_libraries(lob_spsc_stress_test PRIVATE lob lob_warnings GTest::gtest_main
+                                                   Threads::Threads)
 
 include(GoogleTest)
 gtest_discover_tests(lob_tests)
-gtest_discover_tests(lob_zero_alloc_test)
+if(TARGET lob_zero_alloc_test)
+  gtest_discover_tests(lob_zero_alloc_test)
+endif()
+gtest_discover_tests(lob_spsc_stress_test PROPERTIES LABELS concurrency)
