@@ -270,6 +270,9 @@ TEST(AsyncLogger, LogCountsAndDropsWhenRingIsFull) {
   EXPECT_EQ(logger.records_written(), kCapacity + 1);
   EXPECT_EQ(logger.records_dropped(), kDropped);
   EXPECT_EQ(kCapacity + 1 + kDropped, logger.records_written() + logger.records_dropped());
+  // The ring provably filled while the consumer was parked, so the DESIGN §6
+  // high-water mark reads exactly capacity.
+  EXPECT_EQ(logger.ring_high_water(), kCapacity);
   ExpectFifoSequence(ParseRecords(buf.str()), kCapacity + 1);
 }
 

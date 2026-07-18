@@ -291,6 +291,43 @@ TEST(SPSCQueue, TransportsEventPod) {
   EXPECT_EQ(std::memcmp(&in, &out, sizeof(Event)), 0);
 }
 
+// Day 5 task 7: the DESIGN §6 ring occupancy high-water mark. Contract (see
+// try_push): an upper bound on true peak occupancy from the producer's view,
+// exact on a fresh queue with no pops and exactly capacity whenever the ring
+// ever filled; monotone always.
+TEST(SPSCQueue, HighWaterIsExactWithoutConsumerProgress) {
+  SPSCQueue<std::uint64_t> q(8);
+  EXPECT_EQ(q.high_water(), 0u);
+  for (std::uint64_t i = 0; i < 3; ++i) {
+    ASSERT_TRUE(q.try_push(i));
+    EXPECT_EQ(q.high_water(), i + 1);
+  }
+}
+
+TEST(SPSCQueue, HighWaterHitsCapacityWhenFullAndOnFailedPush) {
+  SPSCQueue<std::uint64_t> q(4);
+  for (std::uint64_t i = 0; i < 4; ++i) {
+    ASSERT_TRUE(q.try_push(i));
+  }
+  EXPECT_EQ(q.high_water(), 4u);
+  EXPECT_FALSE(q.try_push(99));  // full: the failed attempt also records capacity
+  EXPECT_EQ(q.high_water(), 4u);
+}
+
+TEST(SPSCQueue, HighWaterIsMonotoneAcrossDrains) {
+  SPSCQueue<std::uint64_t> q(8);
+  for (std::uint64_t i = 0; i < 5; ++i) {
+    ASSERT_TRUE(q.try_push(i));
+  }
+  std::uint64_t v = 0;
+  while (q.try_pop(v)) {
+  }
+  EXPECT_TRUE(q.empty());
+  EXPECT_EQ(q.high_water(), 5u) << "draining must not lower the mark";
+  ASSERT_TRUE(q.try_push(42));
+  EXPECT_GE(q.high_water(), 5u);
+}
+
 // Runtime mirror of the header's layout static_asserts: the shared, producer,
 // and consumer regions must occupy disjoint cache lines or the queue false-
 // shares under load (task 3 measures exactly this).

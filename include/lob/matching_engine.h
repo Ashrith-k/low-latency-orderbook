@@ -12,6 +12,7 @@
 #include "lob/order_pool.h"
 #include "lob/price_ladder.h"
 #include "lob/spsc_queue.h"
+#include "lob/stats.h"
 #include "lob/types.h"
 
 namespace lob {
@@ -54,14 +55,17 @@ class MatchingEngine {
   // kCancel: targets cmd.order_id; the new-order fields are ignored. Any
   // other kind is a corrupted command: debug-asserts, no-op in release —
   // the Day-5 replay/wire readers validate before submitting.
+  //
+  // Pure dispatch to submit/cancel: those are the stats choke points, so the
+  // ring path and the direct-call path count identically by construction.
   template <typename EventSink>
   void process(const Command& cmd, EventSink&& sink) noexcept {
     switch (cmd.kind) {
       case CommandType::kNew:
-        book_.add(cmd.side, cmd.type, cmd.price_ticks, cmd.qty, std::forward<EventSink>(sink));
+        submit(cmd.side, cmd.type, cmd.price_ticks, cmd.qty, std::forward<EventSink>(sink));
         return;
       case CommandType::kCancel:
-        book_.cancel(cmd.order_id, std::forward<EventSink>(sink));
+        cancel(cmd.order_id, std::forward<EventSink>(sink));
         return;
     }
     assert(false && "unknown CommandType");
@@ -103,29 +107,49 @@ class MatchingEngine {
   }
 
   // Direct-call convenience API (DESIGN.md §7): same semantics as process()
-  // with a kNew/kCancel command, plus the return value.
+  // with a kNew/kCancel command, plus the return value. Both entry points
+  // update the DESIGN §6 counters — a few predictable engine-thread-local
+  // increments per op — by wrapping the caller's sink; the event-less
+  // overloads delegate with a no-op sink so they count identically.
   template <typename EventSink>
   OrderId submit(Side side, OrderType type, PriceTicks price, Qty qty, EventSink&& sink) noexcept {
-    return book_.add(side, type, price, qty, std::forward<EventSink>(sink));
+    stats_.on_new();
+    return book_.add(side, type, price, qty, [this, &sink](const Event& e) {
+      stats_.on_event(e);
+      sink(e);
+    });
   }
 
   OrderId submit(Side side, OrderType type, PriceTicks price, Qty qty) noexcept {
-    return book_.add(side, type, price, qty);
+    return submit(side, type, price, qty, [](const Event&) {});
   }
 
   template <typename EventSink>
   bool cancel(OrderId id, EventSink&& sink) noexcept {
-    return book_.cancel(id, std::forward<EventSink>(sink));
+    stats_.on_cancel_request();
+    return book_.cancel(id, [this, &sink](const Event& e) {
+      stats_.on_event(e);
+      sink(e);
+    });
   }
 
-  bool cancel(OrderId id) noexcept { return book_.cancel(id); }
+  bool cancel(OrderId id) noexcept {
+    return cancel(id, [](const Event&) {});
+  }
 
   // Query surface (tests, stats, benchmarks) — the book remains the single
   // source of truth.
   const OrderBook& book() const noexcept { return book_; }
 
+  // DESIGN §6 counters. Engine-thread-owned (stats.h): read at quiescence
+  // or from the engine thread itself. reset_stats() supports the Day-6
+  // warmup-then-measure workflow alongside LatencyRecorder::reset().
+  const EngineStats& stats() const noexcept { return stats_; }
+  void reset_stats() noexcept { stats_.reset(); }
+
  private:
   OrderBook book_;
+  EngineStats stats_;
 };
 
 }  // namespace lob

@@ -12,6 +12,7 @@
 
 #include "lob/matching_engine.h"
 #include "lob/replay_format.h"
+#include "lob/stats.h"
 #include "lob/types.h"
 #include "lob/workload_gen.h"
 
@@ -169,36 +170,12 @@ inline int run_replay(const std::string& path, std::ostream& out, std::ostream& 
     return kExitRuntime;
   }
 
-  struct {
-    std::uint64_t accepted = 0;
-    std::uint64_t rejected = 0;
-    std::uint64_t rejected_unknown = 0;
-    std::uint64_t traded = 0;
-    std::uint64_t traded_qty_both_sides = 0;  // each fill counted once per side
-    std::uint64_t canceled = 0;
-  } n;
-
+  // Counting is the engine's own job now (Day 5 task 7): the CLI just
+  // drains events into a no-op sink and reads EngineStats afterwards.
   MatchingEngine engine(res.config.engine);
   const auto t0 = std::chrono::steady_clock::now();
   for (const Command& cmd : res.commands) {
-    engine.process(cmd, [&n](const Event& e) {
-      switch (e.kind) {
-        case EventType::kAccepted:
-          ++n.accepted;
-          return;
-        case EventType::kRejected:
-          ++n.rejected;
-          n.rejected_unknown += e.reason == RejectReason::kUnknownOrder ? 1 : 0;
-          return;
-        case EventType::kTraded:
-          ++n.traded;
-          n.traded_qty_both_sides += e.qty;
-          return;
-        case EventType::kCanceled:
-          ++n.canceled;
-          return;
-      }
-    });
+    engine.process(cmd, [](const Event&) {});
   }
   const auto t1 = std::chrono::steady_clock::now();
   engine.book().check_invariants();
@@ -217,9 +194,10 @@ inline int run_replay(const std::string& path, std::ostream& out, std::ostream& 
     out << " (~" << (ops * 1'000'000) / us << " ops/s, wall-clock)";
   }
   out << "\n";
-  out << "  events: " << n.accepted << " accepted, " << n.rejected << " rejected ("
-      << n.rejected_unknown << " unknown-order), " << n.traded << " traded (" << n.traded / 2
-      << " fills, qty " << n.traded_qty_both_sides / 2 << "), " << n.canceled << " canceled\n";
+  const EngineStats& s = engine.stats();
+  out << "  events: " << s.accepted << " accepted, " << s.rejected << " rejected ("
+      << s.rejected_unknown_order << " unknown-order), " << s.traded_events << " traded ("
+      << s.fills() << " fills, qty " << s.traded_qty() << "), " << s.canceled << " canceled\n";
 
   const auto bid = engine.book().best_bid();
   const auto ask = engine.book().best_ask();

@@ -161,6 +161,10 @@ class AsyncLogger {
 
   std::size_t ring_capacity() const noexcept { return ring_.capacity(); }
 
+  // DESIGN §6 ring occupancy high-water mark (see SPSCQueue::high_water for
+  // the exactness contract). Any thread, any time.
+  std::size_t ring_high_water() const noexcept { return ring_.high_water(); }
+
  private:
   void consume() {
     std::array<LogRecord, kLoggerBatchSize> batch;

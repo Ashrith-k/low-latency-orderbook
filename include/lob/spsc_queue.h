@@ -51,10 +51,17 @@ class SPSCQueue {
       // consumer's read of a reclaimed slot happens-before we overwrite it.
       head_cache_ = head_.load(std::memory_order_acquire);
       if (tail - head_cache_ == slots_.size()) {
+        // Truly full (fresh head): the high-water mark is exactly capacity.
+        update_high_water(slots_.size());
         return false;
       }
     }
     slots_[tail & mask_] = value;
+    // Occupancy after this push, as the producer sees it (DESIGN §6 ring
+    // high-water counter). head_cache_ may be stale, so this is an upper
+    // bound on the true occupancy — and exact whenever the ring actually
+    // fills, because the full check above always refreshes first.
+    update_high_water(tail + 1 - head_cache_);
     // release: publishes the slot write above; the consumer's acquire load of
     // tail_ sees the data before the index that exposes it.
     tail_.store(tail + 1, std::memory_order_release);
@@ -125,16 +132,35 @@ class SPSCQueue {
 
   bool empty() const noexcept { return size() == 0; }
 
+  // Diagnostic like size(): the highest post-push occupancy the producer has
+  // observed. Upper bound on true peak occupancy (see try_push); exact at
+  // capacity when the ring ever filled. Monotone; exact only at quiescence.
+  std::size_t high_water() const noexcept {
+    // relaxed: a monotonic counter read for reporting; no data is read on
+    // the strength of the value, so no ordering is required.
+    return static_cast<std::size_t>(high_water_.load(std::memory_order_relaxed));
+  }
+
  private:
+  void update_high_water(std::uint64_t occupancy) noexcept {
+    // relaxed both ways: written only by the producer (single writer), and
+    // readers need a number, not ordering.
+    if (occupancy > high_water_.load(std::memory_order_relaxed)) {
+      high_water_.store(occupancy, std::memory_order_relaxed);
+    }
+  }
+
   // Shared, immutable after construction: read by both sides, written by
   // neither, so this line stays shared in both caches and cannot false-share.
   std::vector<T> slots_;
   std::uint64_t mask_;
 
   // Producer-owned line: tail_ plus the producer's stale-but-safe view of
-  // head_ (stale only ever under-reports free space, never over-reports).
+  // head_ (stale only ever under-reports free space, never over-reports),
+  // plus the occupancy high-water mark (producer-written, diagnostic-read).
   alignas(64) std::atomic<std::uint64_t> tail_{0};
   std::uint64_t head_cache_{0};
+  std::atomic<std::uint64_t> high_water_{0};
 
   // Consumer-owned line: head_ plus the consumer's stale-but-safe view of
   // tail_ (stale only ever under-reports occupancy, never over-reports).

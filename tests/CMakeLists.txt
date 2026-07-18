@@ -51,6 +51,7 @@ add_executable(lob_tests
   replay_format_test.cc
   smoke_test.cc
   spsc_queue_test.cc
+  stats_test.cc
   types_test.cc
   workload_gen_test.cc)
 target_link_libraries(lob_tests PRIVATE lob lob_warnings GTest::gtest_main)
