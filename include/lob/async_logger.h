@@ -83,9 +83,11 @@ constexpr LogRecord make_log_record(std::uint64_t timestamp, const Event& e) noe
 // logger; between construction and the return of stop() it is touched
 // exclusively by the logger thread — read it only after stop().
 //
-// Backpressure: try_log returns false when the ring is full and the record is
-// dropped — the engine is never blocked (DESIGN §6). The count-and-drop
-// metric lands with the backpressure task (Day 5 task 2).
+// Backpressure (DESIGN §6): log() is the production policy — count-and-drop.
+// A full ring discards the record and bumps records_dropped(); the engine is
+// never blocked and never retries, and the drop counter is itself a metric
+// (wired through stats in Day 5 task 7). try_log() is the raw primitive for
+// callers implementing their own policy.
 // ---------------------------------------------------------------------------
 
 class AsyncLogger {
@@ -100,7 +102,25 @@ class AsyncLogger {
   AsyncLogger(const AsyncLogger&) = delete;
   AsyncLogger& operator=(const AsyncLogger&) = delete;
 
-  // Producer thread only. False = ring full, record dropped, engine not blocked.
+  // Producer thread only — the production count-and-drop policy. Never
+  // blocks, never retries: a full ring discards the record and bumps the
+  // drop counter. Returns nothing by design: a caller that reacted to a
+  // drop would be implementing a retry policy, which this API forbids —
+  // records_dropped() is the signal.
+  void log(const LogRecord& rec) noexcept {
+    if (!ring_.try_push(rec)) {
+      // relaxed: single-writer monotonic metric; no data is published on its
+      // strength, so no ordering is required.
+      records_dropped_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
+  void log(std::uint64_t timestamp, const Event& e) noexcept { log(make_log_record(timestamp, e)); }
+
+  // Producer thread only — the raw primitive: false = ring full, record NOT
+  // logged, drop counter NOT touched. For callers implementing their own
+  // policy (the lossless tests spin on it), so "dropped" always means a
+  // record was actually lost, never "an attempt failed before a retry".
   bool try_log(const LogRecord& rec) noexcept { return ring_.try_push(rec); }
 
   bool try_log(std::uint64_t timestamp, const Event& e) noexcept {
@@ -129,6 +149,14 @@ class AsyncLogger {
   std::uint64_t records_written() const noexcept {
     assert(!thread_.joinable() && "records_written() is only valid after stop()");
     return records_written_;
+  }
+
+  // Live metric (DESIGN §6): records log() discarded because the ring was
+  // full. Readable from any thread at any time, including mid-run.
+  std::uint64_t records_dropped() const noexcept {
+    // relaxed: a monotonic counter read for reporting; no data is read on
+    // the strength of the value, so no ordering is required.
+    return records_dropped_.load(std::memory_order_relaxed);
   }
 
   std::size_t ring_capacity() const noexcept { return ring_.capacity(); }
@@ -175,6 +203,10 @@ class AsyncLogger {
   SPSCQueue<LogRecord> ring_;
   std::atomic<bool> stop_{false};
   std::uint64_t records_written_ = 0;  // logger thread only; read after join
+  // Producer-owned line: log()'s drop count gets its own cache line so drop
+  // increments never contend with records_written_ above, which the logger
+  // thread writes every batch.
+  alignas(64) std::atomic<std::uint64_t> records_dropped_{0};
   // Declared last: the thread starts inside the constructor and must find
   // every member above fully initialized.
   std::thread thread_;

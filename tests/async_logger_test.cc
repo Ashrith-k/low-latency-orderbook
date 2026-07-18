@@ -2,9 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -39,13 +42,9 @@ TEST(LogRecordLayout, MatchesWireContract) {
 }
 
 TEST(LogRecordLayout, MakeLogRecordMapsTradedEvent) {
-  const Event traded{EventType::kTraded,
-                     Side::kSell,
-                     RejectReason::kNone,
-                     0,
+  const Event traded{EventType::kTraded,  Side::kSell, RejectReason::kNone, 0,
                      /*qty=*/7,
-                     /*remaining=*/3,
-                     0,
+                     /*remaining=*/3,     0,
                      /*price_ticks=*/101,
                      /*order_id=*/42};
   const LogRecord rec = make_log_record(9'000'000'001ull, traded);
@@ -190,6 +189,119 @@ TEST(AsyncLogger, DestructorStopsAndFlushes) {
   ExpectFifoSequence(ParseRecords(oss.str()), 3);
 }
 
+// ---------------------------------------------------------------------------
+// Backpressure: count-and-drop (Day 5 task 2). Observing a drop requires a
+// deterministically full ring, and the only way to get one without racing
+// the drain is to stall the consumer — so this stringbuf blocks its first
+// write until released, pinning the logger thread inside out_.write() while
+// the test fills the ring behind it.
+// ---------------------------------------------------------------------------
+
+class GatedStringbuf : public std::stringbuf {
+ public:
+  // Test thread: returns true once the writer is parked in xsputn (generous
+  // timeout so a bug hangs the assertion, not CI).
+  bool WaitUntilWriterBlocked() {
+    std::unique_lock<std::mutex> lock(mu_);
+    return blocked_cv_.wait_for(lock, std::chrono::seconds(30), [this] { return blocked_; });
+  }
+
+  // Test thread: lets the parked writer (and all later writes) through.
+  void Release() {
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      open_ = true;
+    }
+    release_cv_.notify_all();
+  }
+
+ protected:
+  std::streamsize xsputn(const char* s, std::streamsize n) override {
+    {
+      std::unique_lock<std::mutex> lock(mu_);
+      if (!open_) {
+        blocked_ = true;
+        blocked_cv_.notify_all();
+        release_cv_.wait(lock, [this] { return open_; });
+      }
+    }
+    return std::stringbuf::xsputn(s, n);
+  }
+
+ private:
+  std::mutex mu_;
+  std::condition_variable blocked_cv_;
+  std::condition_variable release_cv_;
+  bool blocked_ = false;
+  bool open_ = false;
+};
+
+TEST(AsyncLogger, LogCountsAndDropsWhenRingIsFull) {
+  constexpr std::uint64_t kCapacity = 64;
+  constexpr std::uint64_t kDropped = 5;
+  GatedStringbuf buf;
+  std::ostream out(&buf);
+  AsyncLogger logger(out, kCapacity);
+
+  // Pin the logger thread: it pops record 0 (emptying the ring) and parks
+  // inside write(), so nothing drains from here on.
+  logger.log(RecordFor(0));
+  ASSERT_TRUE(buf.WaitUntilWriterBlocked()) << "logger thread never reached the sink";
+
+  // With the consumer parked and the ring empty, exactly kCapacity pushes
+  // fit — none of these may drop.
+  for (std::uint64_t i = 1; i <= kCapacity; ++i) {
+    logger.log(RecordFor(i));
+  }
+  EXPECT_EQ(logger.records_dropped(), 0u);
+
+  // The ring is now provably full: every further log() must count-and-drop.
+  // records_dropped() is read live, mid-run — it is an any-thread metric.
+  for (std::uint64_t i = 0; i < kDropped; ++i) {
+    logger.log(RecordFor(kCapacity + 1 + i));
+    EXPECT_EQ(logger.records_dropped(), i + 1);
+  }
+
+  buf.Release();
+  logger.stop();
+
+  // Reconciliation: attempts == written + dropped, and the stream holds
+  // exactly the accepted prefix in FIFO order — the dropped tail is absent.
+  EXPECT_EQ(logger.records_written(), kCapacity + 1);
+  EXPECT_EQ(logger.records_dropped(), kDropped);
+  EXPECT_EQ(kCapacity + 1 + kDropped, logger.records_written() + logger.records_dropped());
+  ExpectFifoSequence(ParseRecords(buf.str()), kCapacity + 1);
+}
+
+TEST(AsyncLogger, LogWithHeadroomNeverDrops) {
+  // Half the ring's capacity through the production log() path with the
+  // consumer live: nothing may drop, and everything must arrive.
+  constexpr std::uint64_t kCount = 512;
+  std::ostringstream oss;
+  AsyncLogger logger(oss, /*ring_capacity=*/1'024);
+  for (std::uint64_t i = 0; i < kCount; ++i) {
+    logger.log(RecordFor(i));
+  }
+  logger.stop();
+  EXPECT_EQ(logger.records_dropped(), 0u);
+  EXPECT_EQ(logger.records_written(), kCount);
+  ExpectFifoSequence(ParseRecords(oss.str()), kCount);
+}
+
+TEST(AsyncLogger, EventOverloadOfLogMapsRecord) {
+  const Event traded{EventType::kTraded, Side::kSell, RejectReason::kNone, 0, 4, 0, 0, 88, 11};
+  std::ostringstream oss;
+  {
+    AsyncLogger logger(oss, /*ring_capacity=*/64);
+    logger.log(456ull, traded);
+    logger.stop();
+  }
+  const std::vector<LogRecord> recs = ParseRecords(oss.str());
+  ASSERT_EQ(recs.size(), 1u);
+  const LogRecord want = make_log_record(456ull, traded);
+  EXPECT_EQ(std::memcmp(&recs[0], &want, sizeof(LogRecord)), 0);
+}
+
 TEST(AsyncLogger, ProducerThreadStress) {
   // Same shape as WritesAllRecordsInFifoOrder but with a dedicated producer
   // thread, so TSan watches the ring + stop contract across three threads
@@ -210,6 +322,10 @@ TEST(AsyncLogger, ProducerThreadStress) {
   logger.stop();
 
   EXPECT_EQ(logger.records_written(), kCount);
+  // 200k records through a 256-slot ring guarantees plenty of failed
+  // try_log attempts — none of which may count as drops: try_log is the raw
+  // primitive, and "dropped" means a record was actually lost.
+  EXPECT_EQ(logger.records_dropped(), 0u);
   ExpectFifoSequence(ParseRecords(oss.str()), kCount);
 }
 
