@@ -1,14 +1,17 @@
 # PROGRESS.md — build log
 
-Status as of **2026-07-18**: **Days 1–4 complete** (Day 1: 13/13 tasks,
+Status as of **2026-07-18**: **Days 1–5 complete** (Day 1: 13/13 tasks,
 `0e15777..1ab59da`; Day 2: 9/9 tasks, `8603dbf..8b2f59a`; Day 3: 8/8 tasks,
-`864a12c..1c97a09`; Day 4: 7/7 tasks, `6335fd5..3135d20`; one commit per task).
+`864a12c..1c97a09`; Day 4: 7/7 tasks, `6335fd5..3135d20`; Day 5: 7/7 tasks,
+`a4b1b03..ab44e14`; one commit per task).
 CI green: {gcc-13, clang-17} × {debug, release}, ASan+UBSan, TSan
 (concurrency label), format gate.
-Test suite: 208 tests in debug/asan (203 in release: 6 death tests compile out
-under NDEBUG, 1 release-only variant compiles in), including two 1M-op
-differential runs — add/cancel and full matching — and 6 concurrency-labeled
-threaded tests that the TSan job runs (~15 s instrumented).
+Test suite: 274 tests in debug/asan (269 in release: 6 death tests compile out
+under NDEBUG, 1 release-only variant compiles in; verified locally 9.8 s),
+including two 1M-op differential runs — add/cancel and full matching — and 19
+concurrency-labeled threaded tests across three binaries that the TSan job
+runs (~16 s instrumented). Two env-gated replay hooks
+(`LOB_DIFF_SEED`/`LOB_DIFF_MATCH_SEED`) skip unless a seed is exported.
 
 ## What is implemented and tested so far
 
@@ -207,6 +210,83 @@ threaded tests that the TSan job runs (~15 s instrumented).
   of minted ids incl. dead ones) and defines the expected event stream +
   end state; engine-loop, smoke, and stress tests all replay against it.
 
+**Observability + workload tooling (Day 5, tasks 1–7)**
+
+- `include/lob/async_logger.h` (tasks 1–2): `LogRecord`, the 32-byte binary
+  log record (DESIGN §6: u64 timestamp, order id, price, qty,
+  kind/side/reason + explicit pad; every offset static_asserted,
+  unique-object-representations so on-disk bytes are the in-memory
+  representation), `make_log_record(ts, Event)` as the one blessed mapping,
+  and `AsyncLogger`: ctor allocates the record ring (default 16384 × 32 B)
+  and spawns the consumer thread; the thread batch-pops 256 records, writes
+  raw bytes to a caller-supplied `std::ostream`, flushes when idle and at
+  shutdown. `stop()` reuses the run() release/acquire stop-then-drain
+  contract verbatim — every accepted record reaches the stream; the
+  destructor stops if the caller didn't. Backpressure is split into two
+  APIs: `log()` is the production policy — count-and-drop, returns void (a
+  caller reacting to a drop would be a retry policy), bumps an
+  `alignas(64)` relaxed-atomic drop counter readable live from any thread —
+  while `try_log()` is the raw non-counting primitive for callers with
+  their own policy, so "dropped" always means a record was actually lost.
+  17 tests in the concurrency-labeled `lob_async_logger_test` binary,
+  including a 100k FIFO byte-exact round trip, a 200k three-thread stress,
+  and a `GatedStringbuf` that parks the logger thread inside `write()` so a
+  provably full ring demonstrates count-and-drop deterministically.
+- `include/lob/workload_gen.h` (task 3): `WorkloadGenerator` — deterministic
+  Command streams: weighted op mix (limit/market/IOC/cancel), qty range,
+  clamped random-walk mid ± Zipf-ish offset (integer harmonic weights,
+  precomputed u64 CDF + binary search), 1-in-N aggressive orders through
+  the mid so streams produce real fills. Cancels come from a private
+  *shadow MatchingEngine*: every emitted command is applied to it and its
+  events maintain the live-id set cancels draw from — engine determinism
+  then guarantees a fresh engine with the same EngineConfig mints identical
+  ids, so every cancel in a pregenerated stream is valid at replay time.
+  Centerpiece test: 100k-command replay with zero unknown/invalid/exhausted
+  rejects and shadow-book parity.
+- `include/lob/replay_format.h` (task 4): 96-byte versioned `ReplayHeader`
+  (`"LOBRPLY\0"`, u32 version = 1, u64 count, full WorkloadConfig verbatim)
+  + packed 24-byte Commands. Strict v1 reader with typed errors
+  (`ReplayReadError` + `to_cstr`): bad magic / unsupported version /
+  truncated header / truncated body / trailing bytes — never a partial
+  load; the body is read in 4096-command chunks so a corrupt count degrades
+  to `kTruncatedBody`, not a giant allocation. Golden-bytes test pins the
+  format at raw offsets; round-trip test replays the file through an engine
+  built from its own header.
+- `tools/` (task 5): `lob_replay` CLI. All logic lives in
+  `tools/lob_replay_lib.h` behind `run_cli(args, out, err) → exit code`
+  (0 ok / 1 runtime / 2 usage) so 13 gtest cases drive the real code
+  paths; `lob_replay.cc` is a three-line main; a ctest smoke runs the
+  binary. `generate --out FILE [--ops/--seed/--anchor/--band/--pool]`
+  wraps the workload generator; `run FILE` replays with a stats summary
+  (wall-clock throughput explicitly labeled indicative). The CLI validates
+  config *semantics* (anchor > 0, band ≤ 2^20, pool ≤ 2^24) before
+  constructing an engine — the format reader deliberately doesn't.
+- `include/lob/latency.h` (task 6): `rdtsc_now()` (plain rdtsc, deliberately
+  unfenced — rationale in-header; steady_clock fallback off x86),
+  `TscCalibration` (spin-measured ticks/second vs steady_clock, ≤1 s window
+  caps the tick product; degenerate readings fall back to identity 1 GHz;
+  `ticks_to_nanos` uses exact overflow-safe split math), and
+  `LatencyRecorder`: 65 counters indexed by `bit_width(ticks)`, O(1)
+  allocation-free lock-free record, integer-only ceil-rank percentiles
+  (`percentile_ticks(999, 1000)`) with in-bucket linear interpolation
+  clamped to observed [min, max] — degenerate distributions exact, p100 ≡
+  max, uniform data within a few percent (pinned by tests). `merge()` for
+  per-thread recorders, `reset()` for warmup discard, `LatencySummary` POD
+  (56 B) with `to_nanos`.
+- `include/lob/stats.h` + engine wiring (task 7): `EngineStats` — DESIGN §6
+  counters as plain u64s (memcmp-legal), engine-thread-owned, read at
+  quiescence. `submit`/`cancel` are the counting choke points (they wrap
+  the caller's sink); `process()` is pure dispatch to them, so ring and
+  direct paths count identically by construction (also proven by memcmp
+  test). Reconciliation identities pinned: `events == accepted + rejected +
+  traded + canceled`, `news == accepted + invalid + exhausted`.
+  `SPSCQueue::try_push` now maintains the DESIGN §6 ring occupancy
+  high-water mark on the producer line (relaxed atomic; exact whenever the
+  ring truly fills since the full check refreshes first, otherwise an upper
+  bound from the producer's cached view — contract documented and tested);
+  `AsyncLogger::ring_high_water()` exposes its ring's mark. The replay CLI
+  dropped its ad-hoc counters and prints from `engine.stats()`.
+
 ## Deviations from DESIGN.md and why
 
 Day 1 (unchanged):
@@ -321,6 +401,59 @@ Day 4:
   with topology documented; the honest cross-core deltas require the Day-6
   bare-metal rerun.
 
+Day 5:
+
+- **`AsyncLogger`'s sink is `std::ostream&`** (DESIGN §6 only says the logger
+  thread "formats/flushes"): virtual dispatch runs on the logger thread, off
+  the latency path, and ostringstream makes byte-exact tests trivial while
+  ofstream covers real files.
+- **`LogRecord.timestamp` is a caller-supplied u64** — the logger is
+  clock-agnostic; rdtsc and calibration belong to `LatencyRecorder`, and the
+  engine wires them together later. `remaining` is not in the record:
+  DESIGN §6's field list (timestamp, type, ids, price, qty) omits it and
+  32 bytes has no spare room; a fill's two Traded records carry both ids.
+- **`log()` vs `try_log()` split**: count-and-drop lives in `log()` only, so
+  the drop counter never counts failed attempts a retrying caller (tests'
+  lossless spins) later satisfied.
+- **The workload generator core lives in `include/lob/workload_gen.h`, not
+  `tools/`** (DESIGN §8): tests and Day-6 benches drive it as a library;
+  the tools/ CLI wrapper is the task-5 `lob_replay generate` subcommand.
+- **Randomness is in-house** (splitmix64 + integer harmonic-CDF Zipf +
+  modulo bounding, bias documented as negligible) instead of `<random>`
+  distributions, whose output is stdlib-specific: replay files must be
+  byte-identical no matter which toolchain generated them.
+- **Cancel synthesis runs a shadow engine inside the generator** — the only
+  way a pregenerated stream can carry concrete ids that are valid at replay
+  time (ids are minted deterministically from EngineConfig). Consequence:
+  a replay is only faithful against the config it was generated with, so
+  **`WorkloadConfig` became wire format** (explicit tail pad, 72 B, frozen
+  asserted offsets, EngineConfig's 16 packed bytes riding along) and the
+  replay header embeds it verbatim.
+- **`replay_format.h`, `stats.h`, and `workload_gen.h` extend DESIGN §7's
+  header list** (tool/observability tier, same spirit as the Day-4
+  `affinity.h` addition).
+- **Replay reader validates format only; the CLI validates semantics**
+  (anchor > 0, band/pool caps) before constructing an engine — a
+  corrupt-but-well-formed file must not become a huge allocation or
+  release-mode unchecked-assert UB. Split pinned by tests on both layers.
+- **`rdtsc_now()` is deliberately unfenced** — few-ns out-of-order skew is
+  noise at op granularity and a serializing fence would perturb the
+  pipeline being measured; revisit on Day 6 only if the numbers demand it.
+- **Percentiles are integer-only** (num/den ceil-rank + in-bucket linear
+  interpolation clamped to observed min/max): keeps the "no floating point"
+  discipline; precision contract (worst case one log2-bucket span) stated
+  in the header instead of pretending exactness.
+- **Ring high-water marks live on `SPSCQueue` itself** (DESIGN §6 lists them
+  with the counters; task 7): producer-line relaxed atomic, one relaxed
+  load + compare per push, no new shared cache lines. The mark is an upper
+  bound (producer's cached view) and exact whenever the ring truly fills —
+  over-claiming exactness would be dishonest, so the contract is documented.
+- **Engine stats are plain non-atomic u64s** read at quiescence (the
+  records_written_ convention) — live cross-thread sampling would need
+  atomics the hot path shouldn't pay for; revisit if a live dashboard ever
+  materializes. The event-less `submit`/`cancel` overloads now route
+  through the counting sink wrapper, so both entry paths count identically.
+
 ## Known issues / TODOs
 
 - **TSan on this Codespace requires `sudo sysctl vm.mmap_rnd_bits=28` each session**,
@@ -329,31 +462,38 @@ Day 4:
 - Hardware perf counters are blocked in Codespaces; Day 6 `perf stat` numbers must come
   from a bare-metal Linux box (documented limitation, per PLAN.md). The
   false-sharing bench numbers carry the extra SMT-siblings caveat above.
-- The debug/asan suite wall time is dominated by the two 1M-op differential
-  runs (~65 s debug, ~130 s asan total; Day 4 added only ~5 s). Fine for CI so
-  far; if it grows, gate the scale runs behind a ctest label and keep the
-  4×25k runs as the default.
+- The debug/asan suite wall time is still dominated by the two 1M-op
+  differential runs (Day 5 added ~2 s of fast tests). Fine for CI so far; if
+  it grows, gate the scale runs behind a ctest label and keep the 4×25k runs
+  as the default.
 - clang-tidy is configured but not yet enforced anywhere (no CI job, no script); the
   clean-up pass is Day 7 task 5.
 - `bench/dummy_bench.cc` is placeholder wiring; the false-sharing bench is
   real, book/matching/e2e benches start Day 6.
+- **The AsyncLogger stage is not yet composed into the DESIGN §3 pipeline by
+  default** — the pieces snap together (engine sink → `make_log_record` →
+  `try_log`/`log`), but the end-to-end engine+logger assembly belongs to the
+  Day-6 e2e bench harness; nothing constructs it today outside tests.
+- The `lob_replay run` throughput line is wall-clock, single-run, unpinned —
+  labeled as such in its output; Day 6 owns the real methodology
+  (pinning, warmup, LatencyRecorder percentiles per op type).
 - README is a stub by design until measured v1.0 numbers exist.
 - `NaiveBook` allocates freely and is slow by design — test/bench oracle only, never on
   the hot path.
 
 ## Next task
 
-**Day 5, task 1: 32-byte binary log record + `AsyncLogger` over SPSC.
-[feat: async logger]**
+**Day 6, task 1: Microbench: add/cancel, NaiveBook vs OrderBook.
+[bench: book micro]**
 
-Per DESIGN.md §6: the hot path writes a 32-byte binary record (timestamp,
-event type, ids, price, qty) into an SPSC ring; the logger thread formats and
-flushes. The ring, batched pop, and the engine-side sink pattern all exist
-now — the logger consumes an `SPSCQueue` of records the way the pipeline
-tests' drainer thread does. Static_assert the record layout like Command/
-Event (explicit padding, unique object representations). Backpressure
-(count-and-drop + drop-counter metric + test) is deliberately task 2 — keep
-task 1 to the record format, the ring plumbing, and the formatting/flushing
-thread with clean startup/shutdown (reuse the stop/drain contract from
-`MatchingEngine::run`). Run the `vm.mmap_rnd_bits` sysctl before any TSan
-work; the logger thread tests belong under the `concurrency` label.
+Everything the benches need now exists: the release preset (verified green,
+269 tests), `WorkloadGenerator` for deterministic op streams,
+`LatencyRecorder` + `TscCalibration` for percentiles, `EngineStats` +
+`reset_stats()` for warmup-then-measure, and `lob_replay generate` for
+replay files. Task 1 is the Google-Benchmark micro comparison of
+add/cancel on `NaiveBook` vs `OrderBook` (the DESIGN §4.3 "array beats
+map" resume number): drive both with identical generated streams, report
+ops/s, and retire `bench/dummy_bench.cc`. Remember DESIGN §11's honesty
+rules — document CPU/kernel/flags, and note that Codespaces numbers are
+indicative (2 vCPUs are SMT siblings of one physical core; the
+false-sharing caveat from Day 4 applies to any cross-thread numbers).

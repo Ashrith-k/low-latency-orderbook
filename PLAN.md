@@ -79,13 +79,13 @@ documented limitations read as maturity, not weakness).
 
 ## Day 5 — Logger, workload, replay
 
-1. [ ] 32-byte binary log record + `AsyncLogger` over SPSC. [feat: async logger]
-2. [ ] Backpressure: count-and-drop + drop-counter metric + test. [feat: logger backpressure]
-3. [ ] Workload generator: configurable op mix, Zipf-ish random-walk prices. [feat: workload gen]
-4. [ ] Replay file format (versioned header + packed commands) + writer/reader. [feat: replay format]
-5. [ ] `lob_replay` CLI: file → engine → stats summary. [feat: replay cli]
-6. [ ] `LatencyRecorder`: rdtsc + calibration + log2 histogram + percentile extraction + tests. [feat: latency recorder]
-7. [ ] Stats/counters module wired through engine. [feat: stats]
+1. [x] 32-byte binary log record + `AsyncLogger` over SPSC. [feat: async logger]
+2. [x] Backpressure: count-and-drop + drop-counter metric + test. [feat: logger backpressure]
+3. [x] Workload generator: configurable op mix, Zipf-ish random-walk prices. [feat: workload gen]
+4. [x] Replay file format (versioned header + packed commands) + writer/reader. [feat: replay format]
+5. [x] `lob_replay` CLI: file → engine → stats summary. [feat: replay cli]
+6. [x] `LatencyRecorder`: rdtsc + calibration + log2 histogram + percentile extraction + tests. [feat: latency recorder]
+7. [x] Stats/counters module wired through engine. [feat: stats]
 
 ## Day 6 — Benchmarks and tuning
 
