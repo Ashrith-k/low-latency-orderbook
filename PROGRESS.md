@@ -1,12 +1,14 @@
 # PROGRESS.md — build log
 
-Status as of **2026-07-17**: **Days 1–3 complete** (Day 1: 13/13 tasks,
+Status as of **2026-07-18**: **Days 1–4 complete** (Day 1: 13/13 tasks,
 `0e15777..1ab59da`; Day 2: 9/9 tasks, `8603dbf..8b2f59a`; Day 3: 8/8 tasks,
-`864a12c..1c97a09`; one commit per task).
-CI green: {gcc-13, clang-17} × {debug, release}, ASan+UBSan, format gate.
-Test suite: 174 tests in debug/asan (170 in release: 5 death tests compile out
+`864a12c..1c97a09`; Day 4: 7/7 tasks, `6335fd5..3135d20`; one commit per task).
+CI green: {gcc-13, clang-17} × {debug, release}, ASan+UBSan, TSan
+(concurrency label), format gate.
+Test suite: 208 tests in debug/asan (203 in release: 6 death tests compile out
 under NDEBUG, 1 release-only variant compiles in), including two 1M-op
-differential runs — add/cancel and full matching.
+differential runs — add/cancel and full matching — and 6 concurrency-labeled
+threaded tests that the TSan job runs (~15 s instrumented).
 
 ## What is implemented and tested so far
 
@@ -136,6 +138,75 @@ differential runs — add/cancel and full matching.
   that an out-of-band rest *does* allocate: the DESIGN-blessed overflow
   exception, pinned as the boundary of the guarantee.
 
+**Concurrency (Day 4, tasks 1–7)**
+
+- `include/lob/spsc_queue.h`: `SPSCQueue<T>` — the lock-free SPSC ring
+  (DESIGN §4.4). Power-of-two capacity over a startup-allocated
+  `std::vector<T>`; monotonic uint64 head/tail masked on access, so all
+  `capacity` slots are usable and full/empty are unambiguous. Producer block
+  (`tail_` + cached view of `head_`) and consumer block (`head_` + cached view
+  of `tail_`) each `alignas(64)`: steady-state ops never write a line the peer
+  polls, and the peer's atomic is reloaded only when the cached value says
+  full/empty. Owner reads its own index relaxed (single writer), publishing
+  stores are release, peer refreshes acquire — rationale commented at every
+  atomic. `try_pop_batch` (task 4) amortizes to one acquire refresh + one
+  release store per batch, masking per element so batches span the wrap.
+  Layout static_asserts pin the three-cache-line structure. 21 single-threaded
+  tests (FIFO across ~2.5k wraps, both cache-refresh paths, batch across the
+  wrap seam, capacity-1, byte-exact Command/Event transport, debug death test
+  on non-power-of-two capacity).
+- `tests/spsc_queue_stress_test.cc` (own binary, ctest label `concurrency`):
+  four 2-thread stress tests — 1M-op FIFO sequence, capacity-1 boundary churn
+  (every op crosses empty↔full), batched-consumer FIFO, and an Event-payload
+  test deriving all 32 bytes from the sequence number and memcmp-ing on
+  arrival (catches torn/reordered slot writes). Workers record failures into
+  relaxed atomics; the main thread asserts after join (join provides the
+  happens-before).
+- CI `tsan` job (clang-17, tsan preset): runs `ctest -L concurrency` only,
+  with the `vm.mmap_rnd_bits=28` sysctl step (the ASLR crash below hits
+  GitHub runners too).
+- `bench/false_sharing_bench.cc`: 2-thread transfer harness over three
+  variants of the identical release/acquire protocol. Medians (release,
+  gcc-13, 7×1.5 s, EPYC 7763 Codespace): naive unpadded+uncached 68.0 M/s,
+  unpadded+cached 67.3 M/s, **padded+cached 101.7 M/s (+51%)**. Big caveat,
+  README-bound: this VM's 2 vCPUs are SMT siblings of one physical core
+  (shared L1/L2), which is why index caching measures ≈0 here and why the
+  padding delta understates the cross-core effect. Bare-metal rerun on Day 6.
+- `MatchingEngine::run(commands, stop, sink)` (task 4): batch-pops into a
+  256-command stack buffer (`kEngineBatchSize`, 6 KiB, zero allocation),
+  processes FIFO, busy-spins while idle, returns commands processed. Shutdown
+  contract: producer sets `stop` (release) only after its final push; the
+  loop observes it with acquire and re-polls once more, guaranteeing a
+  complete drain. Tested by a scout-vs-loop differential: a deterministic
+  1,000-command script through ring+run() must reproduce the directly-driven
+  twin's event stream byte for byte (>3 batches + remainder), plus book
+  parity and empty-ring/drain cases.
+- `include/lob/affinity.h` (task 5): best-effort pinning —
+  `pin_thread_to_cpu` / `pin_current_thread_to_cpu` / `current_cpu` over
+  `pthread_setaffinity_np`/`sched_getcpu`; non-Linux stubs return false/-1;
+  refusals (container cpusets) degrade to "unpinned and documented", never
+  abort. Tests are container-aware: targets come from `sched_getaffinity`'s
+  allowed set, an RAII restorer un-pins after each test.
+- `tests/pipeline_smoke_test.cc` + `tests/pipeline_stress_test.cc` (binary
+  `lob_pipeline_test`, label `concurrency`): the full DESIGN §3 pipeline —
+  producer → command ring → engine thread (run()) → event ring → drainer.
+  Rings deliberately small so both backpressure edges see real contention.
+  Because SPSC rings preserve FIFO and the engine is deterministic, thread
+  timing may change batching but never order/content: the 3-thread event
+  stream must match the single-threaded scout's byte for byte, plus count
+  reconciliation (Accepted + validation-rejects == #New, Traded even, rings
+  empty, book parity, invariant walk). Smoke: 50k commands, rings 256/512.
+  Stress: 250k commands × 3 rounds with asymmetric ring pressure ({64,128},
+  {1024,64} event-starved, {64,2048} command-starved), fresh engine/rings per
+  round so the stop/drain protocol is exercised three times; 9.6 s under
+  TSan. `LOB_PIPELINE_STRESS_OPS` scales ops-per-round for soaks (verified at
+  600k/round).
+- Shared script builder extracted to `tests/script_test_util.h`
+  (`lob::testutil`): a scout engine builds a deterministic mixed
+  command script (resting/crossing limits, IOC, market, invalid adds, cancels
+  of minted ids incl. dead ones) and defines the expected event stream +
+  end state; engine-loop, smoke, and stress tests all replay against it.
+
 ## Deviations from DESIGN.md and why
 
 Day 1 (unchanged):
@@ -211,34 +282,70 @@ Day 3:
   buffers under gtest's stable_sort use nothrow new). All eight new forms
   and matching deletes are replaced.
 
+Day 4:
+
+- **`lob_zero_alloc_test` is excluded from TSan builds** (CMake gates on
+  `-fsanitize=thread` in `CMAKE_CXX_FLAGS`): `libclang_rt.tsan_cxx` strongly
+  defines every C++ `operator new/delete` the test replaces — a hard link
+  collision. The zero-allocation property is single-threaded anyway, and
+  TSan's own runtime allocates. Debug/ASan/release still build and run it.
+- **The TSan CI job runs only `-L concurrency`**, not the full suite: TSan
+  would multiply the two single-threaded 1M-op differential runs into
+  minutes while exercising zero synchronization. Every threaded test carries
+  the label (enforced by construction: they live in the two labeled
+  binaries).
+- **`run()` is a `MatchingEngine` member, not a separate `engine_loop.h`** —
+  DESIGN §7's header list has no loop header, and the facade's comments
+  already anticipated the Day-4 ring loop. matching_engine.h now includes
+  spsc_queue.h/<atomic>.
+- **Event-ring backpressure in the pipeline tests is a test-local lossless
+  spin** (so counts must reconcile exactly). The production policy —
+  count-and-drop, never block the engine (DESIGN §6) — belongs to the Day-5
+  logger and lands with its drop-counter metric and test.
+- **SPSCQueue makes all `capacity` slots usable** (monotonic uint64 indices,
+  full = `tail − head == capacity`) rather than the classic masked-index
+  N−1 scheme; DESIGN doesn't pin this. Indices cannot wrap in practice
+  (2^64 ops ≈ centuries at 1 G ops/s).
+- **`affinity.h` is an addition beyond DESIGN §7's header list** (the §11
+  pinning requirement needs a home); best-effort bool returns instead of
+  exceptions so cpuset-restricted environments degrade gracefully.
+- **False-sharing numbers are SMT-sibling numbers.** Recorded as measured,
+  with topology documented; the honest cross-core deltas require the Day-6
+  bare-metal rerun.
+
 ## Known issues / TODOs
 
 - **TSan on this Codespace requires `sudo sysctl vm.mmap_rnd_bits=28` each session**,
   otherwise TSan-instrumented binaries crash at startup (kernel ASLR entropy vs
-  clang-17 TSan). **Becomes relevant now: Day 4 task 2 adds the TSan job.**
+  clang-17 TSan). The CI tsan job runs the same sysctl as a step.
 - Hardware perf counters are blocked in Codespaces; Day 6 `perf stat` numbers must come
-  from a bare-metal Linux box (documented limitation, per PLAN.md).
-- The debug/asan suite wall time is now dominated by the two 1M-op differential
-  runs (~65 s debug, ~130 s asan total). Fine for CI so far; if it grows, gate
-  the scale runs behind a ctest label and keep the 4×25k runs as the default.
+  from a bare-metal Linux box (documented limitation, per PLAN.md). The
+  false-sharing bench numbers carry the extra SMT-siblings caveat above.
+- The debug/asan suite wall time is dominated by the two 1M-op differential
+  runs (~65 s debug, ~130 s asan total; Day 4 added only ~5 s). Fine for CI so
+  far; if it grows, gate the scale runs behind a ctest label and keep the
+  4×25k runs as the default.
 - clang-tidy is configured but not yet enforced anywhere (no CI job, no script); the
   clean-up pass is Day 7 task 5.
-- `bench/dummy_bench.cc` is placeholder wiring; real benchmarks start Day 6.
+- `bench/dummy_bench.cc` is placeholder wiring; the false-sharing bench is
+  real, book/matching/e2e benches start Day 6.
 - README is a stub by design until measured v1.0 numbers exist.
 - `NaiveBook` allocates freely and is slow by design — test/bench oracle only, never on
   the hot path.
 
 ## Next task
 
-**Day 4, task 1: `SPSCQueue<T>`: single-threaded correctness tests first.
-[feat: spsc queue]**
+**Day 5, task 1: 32-byte binary log record + `AsyncLogger` over SPSC.
+[feat: async logger]**
 
-Per DESIGN.md §4.4: lock-free single-producer/single-consumer ring —
-power-of-two capacity, cached head/tail, acquire/release atomics,
-`alignas(64)` padding against false sharing, batched pop for the engine loop.
-Day 4 task 1 is the single-threaded correctness layer (push/pop/full/empty/
-wraparound); the two-thread stress test and TSan CI job are task 2 — run the
-`vm.mmap_rnd_bits` sysctl above before touching the tsan preset. Memory-ordering
-rationale must be documented at every atomic (CLAUDE.md); expect interviewers
-to drill exactly here. `Command` and `Event` are already memcpy-safe PODs
-(static_asserted in types.h), sized 24 B and 32 B, for ring transport.
+Per DESIGN.md §6: the hot path writes a 32-byte binary record (timestamp,
+event type, ids, price, qty) into an SPSC ring; the logger thread formats and
+flushes. The ring, batched pop, and the engine-side sink pattern all exist
+now — the logger consumes an `SPSCQueue` of records the way the pipeline
+tests' drainer thread does. Static_assert the record layout like Command/
+Event (explicit padding, unique object representations). Backpressure
+(count-and-drop + drop-counter metric + test) is deliberately task 2 — keep
+task 1 to the record format, the ring plumbing, and the formatting/flushing
+thread with clean startup/shutdown (reuse the stop/drain contract from
+`MatchingEngine::run`). Run the `vm.mmap_rnd_bits` sysctl before any TSan
+work; the logger thread tests belong under the `concurrency` label.

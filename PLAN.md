@@ -69,13 +69,13 @@ documented limitations read as maturity, not weakness).
 
 ## Day 4 — Concurrency
 
-1. [ ] `SPSCQueue<T>`: single-threaded correctness tests first. [feat: spsc queue]
-2. [ ] Two-thread stress test; add TSan CI job. [ci: tsan]
-3. [ ] Cache-line padding + a false-sharing before/after microbench (keep both numbers — README material). [bench: false sharing]
-4. [ ] Batched pop; engine thread run loop consuming the command ring. [feat: engine loop]
-5. [ ] CPU pinning utility. [feat: affinity]
-6. [ ] End-to-end smoke: producer → engine → event ring, counts reconcile. [test: pipeline smoke]
-7. [ ] Long-running TSan stress of the full pipeline. [test: tsan stress]
+1. [x] `SPSCQueue<T>`: single-threaded correctness tests first. [feat: spsc queue]
+2. [x] Two-thread stress test; add TSan CI job. [ci: tsan]
+3. [x] Cache-line padding + a false-sharing before/after microbench (keep both numbers — README material). [bench: false sharing]
+4. [x] Batched pop; engine thread run loop consuming the command ring. [feat: engine loop]
+5. [x] CPU pinning utility. [feat: affinity]
+6. [x] End-to-end smoke: producer → engine → event ring, counts reconcile. [test: pipeline smoke]
+7. [x] Long-running TSan stress of the full pipeline. [test: tsan stress]
 
 ## Day 5 — Logger, workload, replay
 
