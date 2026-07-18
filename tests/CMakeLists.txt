@@ -48,7 +48,8 @@ add_executable(lob_tests
   price_level_test.cc
   smoke_test.cc
   spsc_queue_test.cc
-  types_test.cc)
+  types_test.cc
+  workload_gen_test.cc)
 target_link_libraries(lob_tests PRIVATE lob lob_warnings GTest::gtest_main)
 
 # The zero-alloc test replaces global operator new to count allocations — a
