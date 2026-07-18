@@ -40,6 +40,7 @@ add_executable(lob_tests
   edge_cases_test.cc
   engine_loop_test.cc
   invariants_test.cc
+  latency_test.cc
   matching_engine_test.cc
   naive_book_test.cc
   order_book_test.cc
