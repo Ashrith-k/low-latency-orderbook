@@ -99,13 +99,13 @@ documented limitations read as maturity, not weakness).
 
 ## Day 7 — Polish and ship
 
-1. [ ] README: pitch, architecture diagram, design decisions ("why an array beats a map"), results, build/run instructions, limitations, roadmap. [docs: readme]
-2. [ ] Finalize DESIGN.md against as-built reality. [docs: design sync]
-3. [ ] Header doc-comments pass on public API. [docs: api comments]
-4. [ ] `Dockerfile` (pinned toolchain, builds + runs tests + bench smoke). [build: docker]
-5. [ ] clang-tidy clean pass. [chore: tidy]
-6. [ ] CI badge, GitHub topics/description, tag `v1.0.0`. [release: v1.0]
-7. [ ] Write RESUME notes: bullets with the real measured numbers, elevator pitch, anticipated interview questions. (Bring the numbers back to Claude for Step 7.)
+1. [x] README: pitch, architecture diagram, design decisions ("why an array beats a map"), results, build/run instructions, limitations, roadmap. [docs: readme]
+2. [x] Finalize DESIGN.md against as-built reality. [docs: design sync]
+3. [x] Header doc-comments pass on public API. [docs: api comments]
+4. [x] `Dockerfile` (pinned toolchain, builds + runs tests + bench smoke). [build: docker]
+5. [x] clang-tidy clean pass. [chore: tidy]
+6. [x] CI badge, GitHub topics/description, tag `v1.0.0`. [release: v1.0]
+7. [x] Write RESUME notes: bullets with the real measured numbers, elevator pitch, anticipated interview questions. (Bring the numbers back to Claude for Step 7.)
 
 ---
 

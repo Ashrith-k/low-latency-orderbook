@@ -1,11 +1,14 @@
 # PROGRESS.md — build log
 
-Status as of **2026-07-18**: **Days 1–6 complete** (Day 1: 13/13 tasks,
-`0e15777..1ab59da`; Day 2: 9/9 tasks, `8603dbf..8b2f59a`; Day 3: 8/8 tasks,
-`864a12c..1c97a09`; Day 4: 7/7 tasks, `6335fd5..3135d20`; Day 5: 7/7 tasks,
-`a4b1b03..ab44e14`; Day 6: 7/7 tasks, `19a5f62..5fb21ee`; one commit per task).
+Status as of **2026-07-19**: **all 7 days complete — v1.0.0 shipped** (Day 1:
+13/13 tasks, `0e15777..1ab59da`; Day 2: 9/9 tasks, `8603dbf..8b2f59a`; Day 3:
+8/8 tasks, `864a12c..1c97a09`; Day 4: 7/7 tasks, `6335fd5..3135d20`; Day 5:
+7/7 tasks, `a4b1b03..ab44e14`; Day 6: 7/7 tasks, `19a5f62..5fb21ee`; Day 7:
+7/7 tasks, `dd0a41e..4ca737f` — tasks 1–5 one commit each; task 6's artifact
+is the annotated tag `v1.0.0` on `4ca737f` plus repo description/topics; task 7
+is out-of-repo by design).
 CI green: {gcc-13, clang-17} × {debug, release}, ASan+UBSan, TSan
-(concurrency label), format gate.
+(concurrency label), clang-tidy gate, format gate.
 Test suite: 290 tests in debug/asan (285 in release: 6 death tests compile out
 under NDEBUG, 1 release-only variant compiles in), including two 1M-op
 differential runs — add/cancel and full matching — and 34 concurrency-labeled
@@ -359,6 +362,58 @@ table.
   self-consistent run), e2e percentile table, honest-tail narrative, and a
   reproduce-commands block.
 
+**Polish and ship (Day 7, tasks 1–7)**
+
+- README (task 1): full engineering-blog rewrite per PLAN's outline — badge +
+  latency chart up top, five design decisions in problem → options → choice →
+  measured-result form (the empty-side pathology as the featured story),
+  results inlined verbatim from `docs/results.md` with the environment caveat
+  attached, correctness section, build/run, limitations, roadmap. Full scaling
+  tables stay in `docs/results.md` (linked) to keep the README readable.
+- DESIGN.md finalized (task 2): every as-built deviation recorded below folded
+  into the owning section (+110/−48) — measured status in §1, `generation`/id
+  scheme/empty-side counter/monotonic ring indices in §4, RejectReason +
+  determinism rules + invariant split in §5, logger/latency/stats contracts in
+  §6, the real per-call-sink API and expanded header list in §7, actual tree in
+  §8, pinned dep versions and as-built test statuses in §9–11. Implementation
+  minutiae (sentinel values, TSan link collision, elision fix) deliberately
+  stay here, not in DESIGN.
+- API doc-comments pass (task 3): audit found ~95% coverage already; +15
+  comment-only lines fill the gaps where a contract fact wasn't recoverable
+  from the signature (OrderId encoding pointer, contains() staleness,
+  live_count() quiescence identity, ReplayReadResult validity, quiescence
+  caveats, reset() purpose). Self-describing getters left uncommented.
+- Dockerfile + .dockerignore (task 4): ubuntu:24.04, explicit gcc-13/g++-13
+  (default CC/CXX — the toolchain the published numbers cite) + clang-17 for
+  the sanitizer presets. `docker build` IS the verification: release configure
+  + build, full 285-test release suite, then a 10k-command replay through
+  lob_e2e_bench (PLAN's CI-skeleton bench-smoke, realized here); default CMD
+  reruns a 100k-command bench with percentile output. Verified end to end
+  locally (zero cached layers; in-container run consistent with results.md).
+- clang-tidy clean pass (task 5): survey over all 31 first-party TUs found 62
+  unique findings across 5 checks, all resolved with fixes — zero NOLINTs,
+  zero checks disabled. Notables: `Order::pad0` → `std::array` (all 64-byte
+  layout asserts unchanged), int-typed static_assert multiplication in
+  spsc_queue.h, a test loop retyped to OrderId dissolving three
+  misplaced-widening casts, C arrays → std::array in six test files, two
+  missing reserve()s, and [[nodiscard]] auto-applied to 41 const queries in
+  the public headers (+1 bench helper) — zero call sites broke under -Werror.
+  Enforcement now exists: `scripts/tidy.sh` (format.sh ergonomics, --fix mode,
+  -warnings-as-errors='*' gate, shellcheck-clean) + a configure-only CI job.
+  Verified: tidy gate clean, debug + ASan 290/290, TSan concurrency 34/34,
+  clang-17 build 290/290.
+- Release (task 6): pushed Day-7 commits, watched all 8 CI jobs green on
+  `4ca737f` (first CI run of the tidy gate included), then tagged annotated
+  `v1.0.0` on that exact SHA — the tag message carries the headline numbers
+  with the VM caveat. Badge (in README since task 1) now renders green. Repo
+  description + 7 topics set by Ashrith via the web UI — the Codespace
+  GITHUB_TOKEN can push contents but 403s on repo administration.
+- RESUME notes (task 7): delivered as a personal file, not committed — PLAN
+  gives task 7 no commit message and it is interview prep, not repo content.
+  Pitch, quantified bullets, the numbers block for the resume-writing session,
+  ten anticipated interview questions with answers, four weak spots to own
+  proactively.
+
 ## Deviations from DESIGN.md and why
 
 Day 1 (unchanged):
@@ -573,27 +628,22 @@ Day 6:
 - The debug/asan suite wall time is still dominated by the two 1M-op
   differential runs. Fine for CI so far; if it grows, gate the scale runs
   behind a ctest label and keep the 4×25k runs as the default.
-- clang-tidy is configured but not yet enforced anywhere (no CI job, no script); the
-  clean-up pass is Day 7 task 5.
 - The `lob_replay run` throughput line stays wall-clock and labeled
   indicative — `lob_e2e_bench` owns the real methodology now (pinning,
   warmup discard, per-op-type percentiles).
-- README is a stub by design; Day 7 task 1 assembles it from
-  `docs/results.md`, the `docs/img/` charts, and `docs/optlog.md`.
 - `NaiveBook` allocates freely and is slow by design — test/bench oracle only, never on
   the hot path.
 
-## Next task
+## Next steps (post-v1.0.0)
 
-**Day 7, task 1: README — pitch, architecture diagram, design decisions,
-results, build/run instructions, limitations, roadmap. [docs: readme]**
+The 7-day plan is complete: v1.0.0 is tagged on `4ca737f` with every CI gate
+green. In priority order:
 
-The raw material is all written: `docs/results.md` is the README-ready
-numbers section (headline ratios, scaling tables, e2e percentiles,
-reproduce commands), `docs/img/` has both charts, `docs/optlog.md` tells
-the "why an array beats a map" story with the measured worst-case fix
-(0.94M → 88.5M cmd/s), and DESIGN §3 has the pipeline diagram to render.
-Follow PLAN.md's README outline (engineering-blog style, plot at the top);
-keep DESIGN §11 honesty — every number travels with its environment, and
-the Codespaces caveats stay attached until a bare-metal rerun replaces
-them.
+1. **Bare-metal rerun** — one session upgrades every number at once: PMU
+   counters (`scripts/perf_stat.sh` is ready), cross-core false-sharing
+   deltas, real tail maxima on isolated cores, and a `-march=native` release
+   variant. The harnesses need no code changes; replace the tables in
+   `docs/results.md` and the README wholesale, per the honesty rules.
+2. **Roadmap (DESIGN §12)**: epoll TCP gateway with a binary protocol →
+   multi-symbol sharding (symbol hash → engine threads) → book
+   snapshot/recovery → ITCH 5.0 replay support.
