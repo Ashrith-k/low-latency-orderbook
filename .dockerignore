@@ -1,0 +1,8 @@
+# Keep the build context to sources only: local build trees are multi-GB and
+# the image configures/builds from scratch anyway (that is the point).
+build*/
+.git/
+.cache/
+*.log
+__pycache__/
+*.lobr
