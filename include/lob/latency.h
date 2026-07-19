@@ -130,6 +130,7 @@ class LatencyRecorder {
   }
 
   std::uint64_t count() const noexcept { return count_; }
+  // Exact observed extremes (not bucket bounds); both 0 on an empty recorder.
   std::uint64_t min_ticks() const noexcept { return count_ == 0 ? 0 : min_; }
   std::uint64_t max_ticks() const noexcept { return max_; }
 

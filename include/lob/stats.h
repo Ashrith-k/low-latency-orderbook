@@ -81,6 +81,7 @@ struct EngineStats {
   std::uint64_t fills() const noexcept { return traded_events / 2; }
   std::uint64_t traded_qty() const noexcept { return traded_qty_both_sides / 2; }
 
+  // Warmup discard (DESIGN §11), alongside LatencyRecorder::reset().
   void reset() noexcept { *this = EngineStats{}; }
 };
 

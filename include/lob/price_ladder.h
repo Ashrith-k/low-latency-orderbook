@@ -196,6 +196,7 @@ class PriceLadder {
     }
   }
 
+  // True iff no orders rest on this side — band and overflow both.
   bool empty() const noexcept { return best_offset_ == kNullIdx && overflow_.empty(); }
 
   // Best across band and overflow. The overflow check is one usually-true

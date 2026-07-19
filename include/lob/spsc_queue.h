@@ -130,6 +130,7 @@ class SPSCQueue {
                                     head_.load(std::memory_order_relaxed));
   }
 
+  // Diagnostic like size(): exact only at quiescence.
   bool empty() const noexcept { return size() == 0; }
 
   // Diagnostic like size(): the highest post-push occupancy the producer has

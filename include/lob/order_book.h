@@ -189,6 +189,8 @@ class OrderBook {
 
   std::uint32_t open_orders() const noexcept { return pool_.live_count(); }
 
+  // True iff `id` names a currently-open order. Ids of filled/canceled orders
+  // were real once but are stale now and return false (generation check).
   bool contains(OrderId id) const noexcept { return pool_.find(id) != nullptr; }
 
   // Full-book invariant verification (DESIGN.md §5, §10.3): both ladders'

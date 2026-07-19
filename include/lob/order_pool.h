@@ -173,6 +173,8 @@ class OrderPool {
   }
 
   std::uint32_t capacity() const noexcept { return static_cast<std::uint32_t>(slots_.size()); }
+  // Currently-allocated orders. At quiescence this equals resting orders —
+  // matching never leaves an in-flight taker live (OrderBook asserts it).
   std::uint32_t live_count() const noexcept { return live_count_; }
 
  private:

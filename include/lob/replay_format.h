@@ -110,6 +110,8 @@ inline bool write_replay(std::ostream& out, const WorkloadConfig& config,
   return write_replay(out, config, commands.data(), commands.size());
 }
 
+// On any error `commands` is empty (never a partial load); `config` is
+// meaningful only when ok() — header-level failures leave it default.
 struct ReplayReadResult {
   ReplayReadError error = ReplayReadError::kNone;
   WorkloadConfig config{};

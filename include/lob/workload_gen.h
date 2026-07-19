@@ -34,6 +34,8 @@ namespace lob {
 // be byte-identical no matter which toolchain generated it.
 // ---------------------------------------------------------------------------
 
+// Tally of emitted commands by kind; consumers (e2e bench, tests) reconcile
+// engine stats against it.
 struct WorkloadCounts {
   std::uint64_t limits = 0;
   std::uint64_t markets = 0;
@@ -159,6 +161,7 @@ class WorkloadGenerator {
 
   const WorkloadConfig& config() const noexcept { return cfg_; }
   const WorkloadCounts& counts() const noexcept { return counts_; }
+  // Ids currently live in the shadow engine — the cancel-candidate set.
   std::size_t live_orders() const noexcept { return live_ids_.size(); }
 
   // The shadow engine's book: the exact end state a faithful replay of the

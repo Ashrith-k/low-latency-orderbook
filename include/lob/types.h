@@ -14,6 +14,8 @@ namespace lob {
 // engine (DESIGN.md §4.1).
 using PriceTicks = std::int64_t;
 using Qty = std::uint32_t;
+// Opaque to callers; internally generation << 32 | pool index (order_pool.h),
+// which is what makes O(1) cancel lookup and deterministic ABA rejection work.
 using OrderId = std::uint64_t;
 
 // Reserved "no order" id (e.g. in Rejected events for a New that never got
