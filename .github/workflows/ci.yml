@@ -106,6 +106,29 @@ jobs:
       - name: Test (concurrency label)
         run: ctest --preset tsan -L concurrency --output-on-failure
 
+  tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-13
+      CXX: g++-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build gcc-13 g++-13 clang-tidy
+
+      # Configure only — analysis needs no build artifacts, but FetchContent
+      # must run so vendored headers exist, and the debug preset exports the
+      # compile database tidy.sh consumes.
+      - name: Configure
+        run: cmake --preset debug
+
+      - name: clang-tidy
+        run: ./scripts/tidy.sh
+
   format:
     name: format (clang-format)
     runs-on: ubuntu-24.04

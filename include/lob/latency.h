@@ -74,7 +74,7 @@ struct TscCalibration {
   // Exact split math: sec * 1e9 never overflows for any plausible tick
   // count, and rem < ticks_per_second (< 2^34 for real clocks) keeps the
   // second product under 2^64.
-  std::uint64_t ticks_to_nanos(std::uint64_t ticks) const noexcept {
+  [[nodiscard]] std::uint64_t ticks_to_nanos(std::uint64_t ticks) const noexcept {
     const std::uint64_t sec = ticks / ticks_per_second;
     const std::uint64_t rem = ticks % ticks_per_second;
     return sec * 1'000'000'000 + rem * 1'000'000'000 / ticks_per_second;
@@ -104,7 +104,7 @@ struct LatencySummary {
   std::uint64_t p99;
   std::uint64_t p999;
 
-  LatencySummary to_nanos(const TscCalibration& cal) const noexcept {
+  [[nodiscard]] LatencySummary to_nanos(const TscCalibration& cal) const noexcept {
     return LatencySummary{count,
                           cal.ticks_to_nanos(min_ticks),
                           cal.ticks_to_nanos(max_ticks),
@@ -129,14 +129,15 @@ class LatencyRecorder {
     max_ = ticks > max_ ? ticks : max_;
   }
 
-  std::uint64_t count() const noexcept { return count_; }
+  [[nodiscard]] std::uint64_t count() const noexcept { return count_; }
   // Exact observed extremes (not bucket bounds); both 0 on an empty recorder.
-  std::uint64_t min_ticks() const noexcept { return count_ == 0 ? 0 : min_; }
-  std::uint64_t max_ticks() const noexcept { return max_; }
+  [[nodiscard]] std::uint64_t min_ticks() const noexcept { return count_ == 0 ? 0 : min_; }
+  [[nodiscard]] std::uint64_t max_ticks() const noexcept { return max_; }
 
   // The num/den-th percentile in ticks (e.g. 50/100, 999/1000). Integer
   // ceil-rank; 0 on an empty recorder; num == den is exactly max.
-  std::uint64_t percentile_ticks(std::uint64_t num, std::uint64_t den) const noexcept {
+  [[nodiscard]] std::uint64_t percentile_ticks(std::uint64_t num,
+                                               std::uint64_t den) const noexcept {
     assert(den > 0 && num <= den);
     if (count_ == 0) {
       return 0;
@@ -156,7 +157,7 @@ class LatencyRecorder {
     return max_;  // unreachable: cum totals count_ and rank <= count_
   }
 
-  LatencySummary summary() const noexcept {
+  [[nodiscard]] LatencySummary summary() const noexcept {
     return LatencySummary{count_,
                           min_ticks(),
                           max_ticks(),
@@ -210,7 +211,7 @@ class LatencyRecorder {
 
   // Exactness where it matters: degenerate distributions report the exact
   // value, and no percentile can leave the observed range.
-  std::uint64_t clamp_to_observed(std::uint64_t v) const noexcept {
+  [[nodiscard]] std::uint64_t clamp_to_observed(std::uint64_t v) const noexcept {
     v = v < min_ ? min_ : v;
     return v > max_ ? max_ : v;
   }

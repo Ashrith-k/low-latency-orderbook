@@ -1,6 +1,7 @@
 #ifndef LOB_ORDER_POOL_H_
 #define LOB_ORDER_POOL_H_
 
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -65,7 +66,7 @@ struct alignas(64) Order {
   // can bump it; only the pool reads or writes it.
   std::uint32_t generation;
   // Explicit tail padding out to the cache line; keep zero.
-  std::uint8_t pad0[20];
+  std::array<std::uint8_t, 20> pad0;
 };
 
 static_assert(sizeof(Order) == 64);
@@ -158,7 +159,9 @@ class OrderPool {
     return slot.order_id == id ? &slot : nullptr;
   }
 
-  const Order* find(OrderId id) const noexcept { return const_cast<OrderPool*>(this)->find(id); }
+  [[nodiscard]] const Order* find(OrderId id) const noexcept {
+    return const_cast<OrderPool*>(this)->find(id);
+  }
 
   // Unchecked-by-index slot access for book internals following intrusive
   // links (bounds asserted in debug builds only).
@@ -172,10 +175,12 @@ class OrderPool {
     return slots_[index];
   }
 
-  std::uint32_t capacity() const noexcept { return static_cast<std::uint32_t>(slots_.size()); }
+  [[nodiscard]] std::uint32_t capacity() const noexcept {
+    return static_cast<std::uint32_t>(slots_.size());
+  }
   // Currently-allocated orders. At quiescence this equals resting orders —
   // matching never leaves an in-flight taker live (OrderBook asserts it).
-  std::uint32_t live_count() const noexcept { return live_count_; }
+  [[nodiscard]] std::uint32_t live_count() const noexcept { return live_count_; }
 
  private:
   std::vector<Order> slots_;

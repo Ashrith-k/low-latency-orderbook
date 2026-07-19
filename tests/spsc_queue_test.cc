@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 
@@ -165,8 +166,8 @@ TEST(SPSCQueue, SizeTracksMixedOps) {
 
 TEST(SPSCQueue, BatchPopEmptyReturnsZero) {
   SPSCQueue<std::uint64_t> q(8);
-  std::uint64_t buf[8] = {};
-  EXPECT_EQ(q.try_pop_batch(buf, 8), 0u);
+  std::array<std::uint64_t, 8> buf{};
+  EXPECT_EQ(q.try_pop_batch(buf.data(), 8), 0u);
 }
 
 TEST(SPSCQueue, BatchPopTakesUpToMaxInFifoOrder) {
@@ -174,12 +175,12 @@ TEST(SPSCQueue, BatchPopTakesUpToMaxInFifoOrder) {
   for (std::uint64_t i = 0; i < 6; ++i) {
     ASSERT_TRUE(q.try_push(i));
   }
-  std::uint64_t buf[8] = {};
-  ASSERT_EQ(q.try_pop_batch(buf, 4), 4u);
+  std::array<std::uint64_t, 8> buf{};
+  ASSERT_EQ(q.try_pop_batch(buf.data(), 4), 4u);
   for (std::uint64_t i = 0; i < 4; ++i) {
     EXPECT_EQ(buf[i], i);
   }
-  ASSERT_EQ(q.try_pop_batch(buf, 4), 2u);  // only the remainder is available
+  ASSERT_EQ(q.try_pop_batch(buf.data(), 4), 2u);  // only the remainder is available
   EXPECT_EQ(buf[0], 4u);
   EXPECT_EQ(buf[1], 5u);
   EXPECT_TRUE(q.empty());
@@ -189,8 +190,8 @@ TEST(SPSCQueue, BatchPopReturnsFewerThanMaxWhenShort) {
   SPSCQueue<std::uint64_t> q(8);
   ASSERT_TRUE(q.try_push(10));
   ASSERT_TRUE(q.try_push(11));
-  std::uint64_t buf[8] = {};
-  ASSERT_EQ(q.try_pop_batch(buf, 8), 2u);
+  std::array<std::uint64_t, 8> buf{};
+  ASSERT_EQ(q.try_pop_batch(buf.data(), 8), 2u);
   EXPECT_EQ(buf[0], 10u);
   EXPECT_EQ(buf[1], 11u);
 }
@@ -207,8 +208,8 @@ TEST(SPSCQueue, BatchPopAcrossWrapBoundary) {
   for (std::uint64_t i = 100; i < 108; ++i) {  // fills slots 5..7 then wraps to 0..4
     ASSERT_TRUE(q.try_push(i));
   }
-  std::uint64_t buf[8] = {};
-  ASSERT_EQ(q.try_pop_batch(buf, 8), 8u);
+  std::array<std::uint64_t, 8> buf{};
+  ASSERT_EQ(q.try_pop_batch(buf.data(), 8), 8u);
   for (std::uint64_t i = 0; i < 8; ++i) {
     EXPECT_EQ(buf[i], 100 + i);
   }
@@ -219,11 +220,11 @@ TEST(SPSCQueue, BatchPopAcrossWrapBoundary) {
 // refresh it to see items pushed in between.
 TEST(SPSCQueue, BatchPopRefreshesCachedTail) {
   SPSCQueue<std::uint64_t> q(8);
-  std::uint64_t buf[8] = {};
-  EXPECT_EQ(q.try_pop_batch(buf, 8), 0u);  // cache now current (empty)
+  std::array<std::uint64_t, 8> buf{};
+  EXPECT_EQ(q.try_pop_batch(buf.data(), 8), 0u);  // cache now current (empty)
   ASSERT_TRUE(q.try_push(7));
   ASSERT_TRUE(q.try_push(8));
-  ASSERT_EQ(q.try_pop_batch(buf, 8), 2u);  // stale cache says empty; must refresh
+  ASSERT_EQ(q.try_pop_batch(buf.data(), 8), 2u);  // stale cache says empty; must refresh
   EXPECT_EQ(buf[0], 7u);
   EXPECT_EQ(buf[1], 8u);
 }
@@ -236,13 +237,13 @@ TEST(SPSCQueue, BatchPopInterleavesWithSinglePops) {
   std::uint64_t out = 0;
   ASSERT_TRUE(q.try_pop(out));
   EXPECT_EQ(out, 0u);
-  std::uint64_t buf[4] = {};
-  ASSERT_EQ(q.try_pop_batch(buf, 3), 3u);
+  std::array<std::uint64_t, 4> buf{};
+  ASSERT_EQ(q.try_pop_batch(buf.data(), 3), 3u);
   EXPECT_EQ(buf[0], 1u);
   EXPECT_EQ(buf[2], 3u);
   ASSERT_TRUE(q.try_pop(out));
   EXPECT_EQ(out, 4u);
-  ASSERT_EQ(q.try_pop_batch(buf, 4), 2u);
+  ASSERT_EQ(q.try_pop_batch(buf.data(), 4), 2u);
   EXPECT_EQ(buf[0], 5u);
   EXPECT_EQ(buf[1], 6u);
   EXPECT_TRUE(q.empty());
@@ -251,10 +252,10 @@ TEST(SPSCQueue, BatchPopInterleavesWithSinglePops) {
 TEST(SPSCQueue, BatchPopCapacityOne) {
   SPSCQueue<std::uint64_t> q(1);
   ASSERT_TRUE(q.try_push(99));
-  std::uint64_t buf[2] = {};
-  ASSERT_EQ(q.try_pop_batch(buf, 2), 1u);
+  std::array<std::uint64_t, 2> buf{};
+  ASSERT_EQ(q.try_pop_batch(buf.data(), 2), 1u);
   EXPECT_EQ(buf[0], 99u);
-  EXPECT_EQ(q.try_pop_batch(buf, 2), 0u);
+  EXPECT_EQ(q.try_pop_batch(buf.data(), 2), 0u);
 }
 
 // Command and Event are the rings' real cargo. Both have unique object

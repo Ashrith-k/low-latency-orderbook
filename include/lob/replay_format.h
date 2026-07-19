@@ -117,7 +117,7 @@ struct ReplayReadResult {
   WorkloadConfig config{};
   std::vector<Command> commands;
 
-  bool ok() const noexcept { return error == ReplayReadError::kNone; }
+  [[nodiscard]] bool ok() const noexcept { return error == ReplayReadError::kNone; }
 };
 
 // Reads and validates a whole replay file. On any error the result carries

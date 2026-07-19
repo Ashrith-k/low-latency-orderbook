@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <sstream>
@@ -79,8 +80,8 @@ std::vector<CsvRow> ParseCsv(const std::string& text) {
     CsvRow row;
     std::string tok;
     EXPECT_TRUE(std::getline(fields, row.op, ','));
-    std::uint64_t* const nums[] = {&row.count, &row.min_ns, &row.p50,   &row.p90,
-                                   &row.p99,   &row.p999,   &row.max_ns};
+    const std::array<std::uint64_t*, 7> nums = {&row.count, &row.min_ns, &row.p50,   &row.p90,
+                                                &row.p99,   &row.p999,   &row.max_ns};
     for (std::uint64_t* num : nums) {
       // EXPECT (not ASSERT): gtest fatal assertions need a void function.
       EXPECT_TRUE(std::getline(fields, tok, ',')) << line;
@@ -172,6 +173,7 @@ TEST(E2eBenchCli, CorruptCommandKindFailsBeforeThePipeline) {
     cfg.engine.anchor_price = 10'000;
     WorkloadGenerator gen(cfg);
     std::vector<Command> cmds;
+    cmds.reserve(100);
     for (int i = 0; i < 100; ++i) {
       cmds.push_back(gen.next());
     }

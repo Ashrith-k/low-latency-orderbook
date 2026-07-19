@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -55,7 +56,7 @@ TEST(PipelineStress, RepeatedRoundsUnderAsymmetricRingPressure) {
   const EngineConfig cfg = ScriptEngineConfig(1u << 17);
   const Script script = BuildScript(OpsPerRound(), cfg);
 
-  constexpr RingSizes kRounds[] = {{64, 128}, {1024, 64}, {64, 2048}};
+  constexpr std::array<RingSizes, 3> kRounds = {{{64, 128}, {1024, 64}, {64, 2048}}};
   for (std::size_t round = 0; round < 3; ++round) {
     SCOPED_TRACE("round " + std::to_string(round) + " (cmd ring " +
                  std::to_string(kRounds[round].cmd) + ", evt ring " +
@@ -90,12 +91,12 @@ TEST(PipelineStress, RepeatedRoundsUnderAsymmetricRingPressure) {
     });
 
     std::thread drainer([&evt_ring, &engine_done, &got] {
-      Event buf[64];
+      std::array<Event, 64> buf;
       bool done = false;
       for (;;) {
-        const std::size_t n = evt_ring.try_pop_batch(buf, 64);
+        const std::size_t n = evt_ring.try_pop_batch(buf.data(), buf.size());
         if (n > 0) {
-          got.insert(got.end(), buf, buf + n);
+          got.insert(got.end(), buf.data(), buf.data() + n);
           continue;
         }
         if (done) {

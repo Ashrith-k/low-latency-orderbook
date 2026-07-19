@@ -120,23 +120,23 @@ class SPSCQueue {
     return static_cast<std::size_t>(n);
   }
 
-  std::size_t capacity() const noexcept { return slots_.size(); }
+  [[nodiscard]] std::size_t capacity() const noexcept { return slots_.size(); }
 
   // Diagnostic snapshot: exact only when both threads are quiescent (each
   // load is relaxed — no data is read on the strength of the result, so no
   // ordering is required).
-  std::size_t size() const noexcept {
+  [[nodiscard]] std::size_t size() const noexcept {
     return static_cast<std::size_t>(tail_.load(std::memory_order_relaxed) -
                                     head_.load(std::memory_order_relaxed));
   }
 
   // Diagnostic like size(): exact only at quiescence.
-  bool empty() const noexcept { return size() == 0; }
+  [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
   // Diagnostic like size(): the highest post-push occupancy the producer has
   // observed. Upper bound on true peak occupancy (see try_push); exact at
   // capacity when the ring ever filled. Monotone; exact only at quiescence.
-  std::size_t high_water() const noexcept {
+  [[nodiscard]] std::size_t high_water() const noexcept {
     // relaxed: a monotonic counter read for reporting; no data is read on
     // the strength of the value, so no ordering is required.
     return static_cast<std::size_t>(high_water_.load(std::memory_order_relaxed));
@@ -173,7 +173,7 @@ class SPSCQueue {
 // the shared, producer, and consumer regions occupy disjoint cache lines.
 static_assert(alignof(SPSCQueue<std::uint64_t>) == 64);
 static_assert(sizeof(SPSCQueue<std::uint64_t>) % 64 == 0);
-static_assert(sizeof(SPSCQueue<std::uint64_t>) >= 3 * 64);
+static_assert(sizeof(SPSCQueue<std::uint64_t>) >= std::size_t{3} * 64);
 
 }  // namespace lob
 

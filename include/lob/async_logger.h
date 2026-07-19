@@ -146,24 +146,24 @@ class AsyncLogger {
 
   // Records the logger thread has written to the stream. Written by the
   // logger thread only — call after stop() (the join makes it visible).
-  std::uint64_t records_written() const noexcept {
+  [[nodiscard]] std::uint64_t records_written() const noexcept {
     assert(!thread_.joinable() && "records_written() is only valid after stop()");
     return records_written_;
   }
 
   // Live metric (DESIGN §6): records log() discarded because the ring was
   // full. Readable from any thread at any time, including mid-run.
-  std::uint64_t records_dropped() const noexcept {
+  [[nodiscard]] std::uint64_t records_dropped() const noexcept {
     // relaxed: a monotonic counter read for reporting; no data is read on
     // the strength of the value, so no ordering is required.
     return records_dropped_.load(std::memory_order_relaxed);
   }
 
-  std::size_t ring_capacity() const noexcept { return ring_.capacity(); }
+  [[nodiscard]] std::size_t ring_capacity() const noexcept { return ring_.capacity(); }
 
   // DESIGN §6 ring occupancy high-water mark (see SPSCQueue::high_water for
   // the exactness contract). Any thread, any time.
-  std::size_t ring_high_water() const noexcept { return ring_.high_water(); }
+  [[nodiscard]] std::size_t ring_high_water() const noexcept { return ring_.high_water(); }
 
  private:
   void consume() {

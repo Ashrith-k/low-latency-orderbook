@@ -46,6 +46,7 @@ TEST(WorkloadGenerator, DifferentSeedProducesDifferentStream) {
 TEST(WorkloadGenerator, GenerateWorkloadHelperMatchesManualLoop) {
   WorkloadGenerator gen(TestConfig(3));
   std::vector<Command> manual;
+  manual.reserve(5'000);
   for (int i = 0; i < 5'000; ++i) {
     manual.push_back(gen.next());
   }

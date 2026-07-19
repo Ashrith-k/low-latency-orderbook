@@ -34,7 +34,7 @@ struct PriceLevel {
   // compare levels directly. 64-bit: many u32 remainings can top 32 bits.
   std::uint64_t total_qty = 0;
 
-  bool empty() const noexcept { return head_idx == kNullIdx; }
+  [[nodiscard]] bool empty() const noexcept { return head_idx == kNullIdx; }
 
   // Appends a freshly-allocated (or freshly-unlinked) order at the back of
   // the FIFO. Precondition: the order's links are kNullIdx.
@@ -119,14 +119,14 @@ class PriceLadder {
     assert(band_radius > 0 && band_radius <= (1u << 24));
   }
 
-  bool in_band(PriceTicks price) const noexcept {
+  [[nodiscard]] bool in_band(PriceTicks price) const noexcept {
     return price >= low_price_ && price < low_price_ + static_cast<PriceTicks>(levels_.size());
   }
 
   // Uniform level query for the book and the differential harness: in-band
   // prices always have a level (possibly empty); out-of-band prices return
   // nullptr unless an overflow level currently rests there.
-  const PriceLevel* find_level(PriceTicks price) const noexcept {
+  [[nodiscard]] const PriceLevel* find_level(PriceTicks price) const noexcept {
     if (in_band(price)) {
       return &levels_[static_cast<std::size_t>(price - low_price_)];
     }
@@ -197,12 +197,14 @@ class PriceLadder {
   }
 
   // True iff no orders rest on this side — band and overflow both.
-  bool empty() const noexcept { return best_offset_ == kNullIdx && overflow_.empty(); }
+  [[nodiscard]] bool empty() const noexcept {
+    return best_offset_ == kNullIdx && overflow_.empty();
+  }
 
   // Best across band and overflow. The overflow check is one usually-true
   // branch (map empty), so the common case stays a single add.
   // Precondition for both: !empty().
-  PriceTicks best_price() const noexcept {
+  [[nodiscard]] PriceTicks best_price() const noexcept {
     assert(!empty());
     if (overflow_.empty()) {
       return low_price_ + best_offset_;
@@ -232,7 +234,7 @@ class PriceLadder {
 
   PriceLevel& best_level() noexcept { return level_at(best_price()); }
 
-  Side side() const noexcept { return side_; }
+  [[nodiscard]] Side side() const noexcept { return side_; }
 
   // What a full-ladder walk found; OrderBook cross-checks it against the pool.
   struct Census {
@@ -247,7 +249,7 @@ class PriceLadder {
   // best non-empty price; overflow entries are non-empty and out-of-band.
   // O(band + orders): for tests and periodic harness checks, never per-op on
   // the hot path. Debug builds only — a no-op census under NDEBUG.
-  Census check_invariants([[maybe_unused]] const OrderPool& pool) const noexcept {
+  [[nodiscard]] Census check_invariants([[maybe_unused]] const OrderPool& pool) const noexcept {
     Census census;
 #ifndef NDEBUG
     PriceTicks best_seen = 0;
@@ -307,7 +309,7 @@ class PriceLadder {
 
  private:
   // "Better" toward the front of the book: higher for bids, lower for asks.
-  bool IsBetter(std::int32_t lhs, std::int32_t rhs) const noexcept {
+  [[nodiscard]] bool IsBetter(std::int32_t lhs, std::int32_t rhs) const noexcept {
     return side_ == Side::kBuy ? lhs > rhs : lhs < rhs;
   }
 

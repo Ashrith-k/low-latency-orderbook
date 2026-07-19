@@ -139,12 +139,12 @@ class MatchingEngine {
 
   // Query surface (tests, stats, benchmarks) — the book remains the single
   // source of truth.
-  const OrderBook& book() const noexcept { return book_; }
+  [[nodiscard]] const OrderBook& book() const noexcept { return book_; }
 
   // DESIGN §6 counters. Engine-thread-owned (stats.h): read at quiescence
   // or from the engine thread itself. reset_stats() supports the Day-6
   // warmup-then-measure workflow alongside LatencyRecorder::reset().
-  const EngineStats& stats() const noexcept { return stats_; }
+  [[nodiscard]] const EngineStats& stats() const noexcept { return stats_; }
   void reset_stats() noexcept { stats_.reset(); }
 
  private:

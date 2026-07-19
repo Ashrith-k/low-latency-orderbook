@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <optional>
 #include <vector>
 
@@ -418,14 +419,14 @@ TEST(NaiveBookMatching, RepeatedPartialFillsKeepPriorityAndCountDown) {
   std::vector<Event> events;
   book.add(1, Side::kSell, OrderType::kLimit, 100, 20, events);
 
-  const Qty maker_remaining_after[] = {15, 10, 5};
-  for (int i = 0; i < 3; ++i) {
+  const std::array<Qty, 3> maker_remaining_after = {15, 10, 5};
+  for (OrderId i = 0; i < 3; ++i) {
     events.clear();
-    book.add(static_cast<OrderId>(2 + i), Side::kBuy, OrderType::kLimit, 100, 5, events);
+    book.add(2 + i, Side::kBuy, OrderType::kLimit, 100, 5, events);
     ExpectEvents(events, {
-                             Accepted(Side::kBuy, 5, 100, static_cast<OrderId>(2 + i)),
+                             Accepted(Side::kBuy, 5, 100, 2 + i),
                              Traded(Side::kSell, 5, maker_remaining_after[i], 100, 1),
-                             Traded(Side::kBuy, 5, 0, 100, static_cast<OrderId>(2 + i)),
+                             Traded(Side::kBuy, 5, 0, 100, 2 + i),
                          });
     EXPECT_EQ(maker_remaining_after[i], book.qty_at(Side::kSell, 100));
     EXPECT_TRUE(book.contains(1));  // still resting, still front

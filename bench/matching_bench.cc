@@ -144,7 +144,7 @@ class BookDriver {
 
   lob::OrderId add(const Op& op) { return book_.add(op.side, op.type, op.price, op.qty); }
 
-  std::size_t open_orders() const { return book_.open_orders(); }
+  [[nodiscard]] std::size_t open_orders() const { return book_.open_orders(); }
 
  private:
   lob::OrderBook book_;

@@ -165,33 +165,33 @@ class OrderBook {
     return cancel(id, [](const Event&) noexcept {});
   }
 
-  std::optional<PriceTicks> best_bid() const noexcept {
+  [[nodiscard]] std::optional<PriceTicks> best_bid() const noexcept {
     if (bids_.empty()) return std::nullopt;
     return bids_.best_price();
   }
 
-  std::optional<PriceTicks> best_ask() const noexcept {
+  [[nodiscard]] std::optional<PriceTicks> best_ask() const noexcept {
     if (asks_.empty()) return std::nullopt;
     return asks_.best_price();
   }
 
   // Total open quantity at a price level; 0 if the level does not exist.
-  std::uint64_t qty_at(Side side, PriceTicks price) const noexcept {
+  [[nodiscard]] std::uint64_t qty_at(Side side, PriceTicks price) const noexcept {
     const PriceLevel* level = ladder(side).find_level(price);
     return level == nullptr ? 0 : level->total_qty;
   }
 
   // Number of open orders at a price level; 0 if the level does not exist.
-  std::uint32_t orders_at(Side side, PriceTicks price) const noexcept {
+  [[nodiscard]] std::uint32_t orders_at(Side side, PriceTicks price) const noexcept {
     const PriceLevel* level = ladder(side).find_level(price);
     return level == nullptr ? 0 : level->order_count;
   }
 
-  std::uint32_t open_orders() const noexcept { return pool_.live_count(); }
+  [[nodiscard]] std::uint32_t open_orders() const noexcept { return pool_.live_count(); }
 
   // True iff `id` names a currently-open order. Ids of filled/canceled orders
   // were real once but are stale now and return false (generation check).
-  bool contains(OrderId id) const noexcept { return pool_.find(id) != nullptr; }
+  [[nodiscard]] bool contains(OrderId id) const noexcept { return pool_.find(id) != nullptr; }
 
   // Full-book invariant verification (DESIGN.md §5, §10.3): both ladders'
   // structural checks (FIFO links, level aggregates, best cursors — see
@@ -213,12 +213,14 @@ class OrderBook {
 
  private:
   PriceLadder& ladder(Side side) noexcept { return side == Side::kBuy ? bids_ : asks_; }
-  const PriceLadder& ladder(Side side) const noexcept { return side == Side::kBuy ? bids_ : asks_; }
+  [[nodiscard]] const PriceLadder& ladder(Side side) const noexcept {
+    return side == Side::kBuy ? bids_ : asks_;
+  }
 
   // Matching must never leave the book crossed. add_limit can (by design),
   // which is why cancel() does not assert this: a cancel cannot cross a
   // book, and the Day-2 harness cancels on deliberately crossed ones.
-  bool uncrossed() const noexcept {
+  [[nodiscard]] bool uncrossed() const noexcept {
     return bids_.empty() || asks_.empty() || bids_.best_price() < asks_.best_price();
   }
 

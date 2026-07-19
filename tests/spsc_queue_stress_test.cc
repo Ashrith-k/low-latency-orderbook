@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -122,10 +123,10 @@ TEST(SPSCQueueStress, BatchedConsumerFifoUnderContention) {
     }
   });
   std::thread consumer([&] {
-    std::uint64_t buf[64];
+    std::array<std::uint64_t, 64> buf;
     std::uint64_t expected = 0;
     while (expected < kOps) {
-      const std::size_t n = q.try_pop_batch(buf, 64);
+      const std::size_t n = q.try_pop_batch(buf.data(), buf.size());
       if (n == 0) {
         std::this_thread::yield();
         continue;
